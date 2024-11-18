@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import FileTransfer from './FileTransferComponent';
 import {
   addFile,
   getFile,
@@ -125,6 +126,9 @@ function App() {
             )}
         </div>
       )}
+      <div>
+        <FileTransfer/>
+      </div>
     </div>
   );
 }
