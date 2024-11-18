@@ -9,6 +9,8 @@ const StringTransfer = () => {
   const [connected, setConnected] = useState(false);
   const [receivedMessages, setReceivedMessages] = useState([]);
   const [messageToSend, setMessageToSend] = useState('');
+  const [isConnectedToSignaling, setIsConnectedToSignaling] = useState(false);
+  const [connectionMessage, setConnectionMessage] = useState('');
 
   const configuration = {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
@@ -20,7 +22,10 @@ const StringTransfer = () => {
 
     // Create a DataChannel for sending strings
     dataChannel.current = peerConnection.current.createDataChannel('stringTransfer');
-    dataChannel.current.onopen = () => console.log('DataChannel opened');
+    dataChannel.current.onopen = () => {
+        console.log('DataChannel opened');
+        setConnected(true);
+    }
     dataChannel.current.onclose = () => console.log('DataChannel closed');
     dataChannel.current.onmessage = (event) => {
       console.log('Received:', event.data);
@@ -47,6 +52,24 @@ const StringTransfer = () => {
 
     // Connect to the signaling server
     signalingServer.current = connectToSignalingServer(handleSignalingMessage);
+
+    signalingServer.current.onopen = () => {
+        console.log('Connected to signaling server');
+        setConnectionMessage('Successfully connected to the signaling server.');
+        setIsConnectedToSignaling(true)
+    };
+
+    signalingServer.current.onclose = () => {
+        console.log('Connection closed');
+        setConnectionMessage('Disconnected from the signaling server.');
+        setIsConnectedToSignaling(false)
+    };
+
+    signalingServer.current.onerror = (error) => {
+        console.error('Signaling server error:', error);
+        setConnectionMessage('Failed to connect to the signaling server. Please try again.');
+        setIsConnectedToSignaling(false);
+    };
   };
 
   // Handle signaling messages
@@ -78,7 +101,6 @@ const StringTransfer = () => {
     const message = JSON.stringify({ type: 'offer', offer })
     signalingServer.current.send(message);
     console.log('SDP offer create:', message)
-    setConnected(true);
   };
 
   // Send a string to the peer
@@ -95,24 +117,28 @@ const StringTransfer = () => {
       <h1>String Transfer</h1>
       {!connected ? (
         <>
-          <button onClick={setupConnection}>Start Connection</button>
-          <button onClick={createOffer}>Connect</button>
+            <button onClick={setupConnection} disabled={isConnectedToSignaling}>Start Connection</button>
+            {isConnectedToSignaling ? (
+                <button onClick={createOffer}>Connect</button>
+            ): <></>}
+            <p>{connectionMessage}</p> 
         </>
       ) : (
         <div>
-          <input
-            type="text"
-            value={messageToSend}
-            onChange={(e) => setMessageToSend(e.target.value)}
-            placeholder="Type your message here"
-          />
-          <button onClick={sendMessage}>Send</button>
-          <h3>Received Messages:</h3>
-          <ul>
-            {receivedMessages.map((msg, index) => (
-              <li key={index}>{msg}</li>
-            ))}
-          </ul>
+            <p>Connected to a Peer</p> 
+            <input
+                type="text"
+                value={messageToSend}
+                onChange={(e) => setMessageToSend(e.target.value)}
+                placeholder="Type your message here"
+            />
+            <button onClick={sendMessage}>Send</button>
+            <h3>Received Messages:</h3>
+            <ul>
+                {receivedMessages.map((msg, index) => (
+                <li key={index}>{msg}</li>
+                ))}
+            </ul>
         </div>
       )}
     </div>
