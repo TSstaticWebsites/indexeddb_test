@@ -266,7 +266,9 @@ const FileTransferComponent = ({ fetchStoredFiles }) => {
             return;
         }
 
-        const CHUNK_SIZE = 16 * 1024; // 16 KB per chunk
+        const CHUNK_SIZE = 16 * 1024; 
+        const MAX_BUFFERED_AMOUNT = 64 * 1024;
+
         const reader = new FileReader();
         const arrayBuffer = await new Promise((resolve, reject) => {
             reader.onload = () => resolve(reader.result);
@@ -292,6 +294,13 @@ const FileTransferComponent = ({ fetchStoredFiles }) => {
         const sendChunk = () => {
             if (!dataChannel.current || dataChannel.current.readyState !== 'open') {
                 console.error('DataChannel is not open.');
+                return;
+            }
+
+            // Check if the buffer is full
+            if (dataChannel.current.bufferedAmount > MAX_BUFFERED_AMOUNT) {
+                console.log('Buffer is full, waiting...');
+                setTimeout(sendChunk, 10); // Retry after 10ms
                 return;
             }
 
