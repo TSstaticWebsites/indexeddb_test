@@ -1,11 +1,12 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { getFile, getAllFiles, addFile } from './db'
+import './FileTransferComponent.css'
 
 const configuration = {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
 };
 
-const FileTransferComponent = () => {
+const FileTransferComponent = ({ fetchStoredFiles }) => {
     const dataChannel = useRef(null)
     const peerConnection = useRef(null)
     const signalingServer = useRef(null);
@@ -110,6 +111,7 @@ const FileTransferComponent = () => {
                             // Clear received chunks
                             receivedChunks = [];
                             setDownloadProgress(100); // Mark download as complete
+                            fetchStoredFiles();
                         } else {
                             console.log('Received unexpected string data:', parsedData);
                         }
@@ -329,54 +331,85 @@ const FileTransferComponent = () => {
 
 
     return (
-        <div>
-            <h1>Video Transfer</h1>
-            {!connected ? (
-                <>
-                    <button onClick={setupConnection} disabled={isConnectedToSignaling}>Start Connection</button>
-                    {isConnectedToSignaling ? (
-                        <button onClick={createOffer}>Connect</button>
-                    ): <></>}
-                    <p>{connectionMessage}</p> 
-                </>
-            ) : (
-                <div>
-                    <p>Connected to a Peer</p>
-                    <button onClick={sendVideo}>Send Selected Video</button>
-                    <div>
-                        <h3>Select a Video to Send</h3>
-                        {storedVideos.length > 0 ? (
+        <div className="video-transfer-container">
+        <h1>Video Transfer</h1>
+
+        {!connected ? (
+            <div className="connection-controls">
+                <button onClick={setupConnection} disabled={isConnectedToSignaling}>
+                    Start Connection
+                </button>
+                {isConnectedToSignaling && (
+                    <button onClick={createOffer}>Connect</button>
+                )}
+                <p>{connectionMessage}</p>
+            </div>
+        ) : (
+            <div className="transfer-controls">
+                <p>Connected to a Peer</p>
+
+                <div className="video-selection">
+                    <h3>Select a Video to Send</h3>
+                    {storedVideos.length > 0 ? (
+                        <div className="dropdown-container">
                             <select
                                 value={selectedVideoId || ''}
                                 onChange={(e) => setSelectedVideoId(Number(e.target.value))}
                             >
-                            <option value="" disabled>Select a video</option>
-                            {storedVideos.map((video) => (
-                                <option key={video.id} value={video.id}>
-                                {video.fileName}
+                                <option value="" disabled>
+                                    Select a video
                                 </option>
-                            ))}
+                                {storedVideos.map((video) => (
+                                    <option key={video.id} value={video.id}>
+                                        {video.fileName}
+                                    </option>
+                                ))}
                             </select>
-                        ) : (
-                            <p>No videos available. Upload one first!</p>
-                        )}
-                    </div>
-                    <h3>Received Video</h3>
-                    {receivedVideoId && (
-                        <p>Video stored in IndexedDB with ID: {receivedVideoId}</p>
+                            <button className="send-video-btn" onClick={sendVideo}>
+                                Send Selected Video
+                            </button>
+                        </div>
+                    ) : (
+                        <p>No videos available. Upload one first!</p>
                     )}
-                    <div>
-                        <h3>Upload Progress</h3>
-                        <progress value={uploadProgress} max="100"></progress>
-                        <p>{uploadProgress}%</p>
-
-                        <h3>Download Progress</h3>
-                        <progress value={downloadProgress} max="100"></progress>
-                        <p>{downloadProgress}%</p>
-                    </div>
                 </div>
-            )}
+
+                <div className="received-video">
+                    <h3>Received Video</h3>
+                    {receivedVideoId ? (
+                        <p>Video stored in IndexedDB with ID: {receivedVideoId}</p>
+                    ) : (
+                        <p>No video received yet.</p>
+                    )}
+                </div>
+
+                <div className="progress-section">
+                    {uploadProgress >= 1 && uploadProgress < 100 && (
+                        <div className="upload-progress">
+                            <h3>Upload Progress</h3>
+                            <progress value={uploadProgress} max="100"></progress>
+                            <p>{uploadProgress}%</p>
+                        </div>
+                    )}
+                    {uploadProgress === 100 && (
+                        <p className="success-message">Upload completed successfully!</p>
+                    )}
+
+                    {downloadProgress >= 1 && downloadProgress < 100 && (
+                        <div className="download-progress">
+                            <h3>Download Progress</h3>
+                            <progress value={downloadProgress} max="100"></progress>
+                            <p>{downloadProgress}%</p>
+                        </div>
+                    )}
+                    {downloadProgress === 100 && (
+                        <p className="success-message">Download completed successfully!</p>
+                    )}
+                </div>
+            </div>
+        )}
         </div>
+
     );
 };
 

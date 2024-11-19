@@ -1,0 +1,72 @@
+.video-transfer-container {
+    font-family: Arial, sans-serif;
+    margin: 20px;
+}
+
+.connection-controls,
+.transfer-controls {
+    margin-bottom: 20px;
+}
+
+.video-selection,
+.received-video {
+    margin-top: 15px;
+}
+
+.progress-section {
+    margin-top: 30px;
+}
+
+.upload-progress,
+.download-progress {
+    margin-bottom: 15px;
+}
+
+.success-message {
+    color: green;
+    font-weight: bold;
+}
+
+button {
+    margin-right: 10px;
+    padding: 5px 10px;
+    font-size: 14px;
+}
+
+progress {
+    width: 100%;
+    margin: 10px 0;
+}
+
+/* Dropdown and button container */
+.dropdown-container {
+    display: flex; /* Ensures elements are aligned horizontally */
+    align-items: center; /* Vertically aligns items */
+    gap: 10px; /* Adds spacing between dropdown and button */
+    margin-top: 10px;
+}
+
+select {
+    width: 100%;
+    padding: 8px; /* Adjusted padding for consistent height */
+    font-size: 14px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    height: 40px; /* Ensures a consistent height */
+}
+
+.send-video-btn {
+    padding: 8px 15px; /* Matches dropdown padding */
+    font-size: 14px;
+    height: 40px; /* Matches the height of the select box */
+    background-color: #007bff;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.3s;
+}
+
+.send-video-btn:hover {
+    background-color: #0056b3;
+}
