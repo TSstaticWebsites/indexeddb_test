@@ -35,6 +35,7 @@ const FileTransferComponent = ({ fetchStoredFiles }) => {
     // New state for circuit status
     const [circuitStatus, setCircuitStatus] = useState(null);
     const [circuitHops, setCircuitHops] = useState(0);
+    const [circuitMonitor, setCircuitMonitor] = useState(null);
 
     useEffect(() => {
         const fetchVideos = async () => {
