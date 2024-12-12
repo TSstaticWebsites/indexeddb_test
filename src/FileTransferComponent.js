@@ -4,6 +4,7 @@ import { LayeredEncryption } from './lib/onion/crypto';
 import { NodeRegistry } from './lib/onion/nodeRegistry';
 import { CircuitBuilder, CircuitStatus } from './lib/onion/circuitBuilder';
 import NodeControls from './components/NodeControls';
+import FileRoutingVisualizer from './components/FileRoutingVisualizer';
 import './FileTransferComponent.css';
 
 const configuration = {
@@ -36,6 +37,11 @@ const FileTransferComponent = ({ fetchStoredFiles }) => {
     const [circuitStatus, setCircuitStatus] = useState(null);
     const [circuitHops, setCircuitHops] = useState(0);
     const [circuitMonitor, setCircuitMonitor] = useState(null);
+
+    // New state for routing visualization
+    const [currentRoutingChunk, setCurrentRoutingChunk] = useState(0);
+    const [totalRoutingChunks, setTotalRoutingChunks] = useState(0);
+    const [transferDirection, setTransferDirection] = useState('outbound');
 
     useEffect(() => {
         const fetchVideos = async () => {
@@ -350,6 +356,11 @@ const FileTransferComponent = ({ fetchStoredFiles }) => {
         const totalChunks = Math.ceil(arrayBuffer.byteLength / CHUNK_SIZE);
         let currentChunk = 0;
 
+        // Initialize routing visualization state
+        setTotalRoutingChunks(totalChunks);
+        setCurrentRoutingChunk(0);
+        setTransferDirection('outbound');
+
         const startMetadata = {
             type: 'start-of-file',
             fileName: videoFile.fileName,
@@ -382,6 +393,8 @@ const FileTransferComponent = ({ fetchStoredFiles }) => {
             await circuitBuilder.current.sendThroughCircuit(currentCircuit.current, chunk);
             currentChunk++;
 
+            // Update routing visualization state
+            setCurrentRoutingChunk(currentChunk);
             const progress = Math.round((currentChunk / totalChunks) * 100);
             console.log(`Upload progress: ${progress}%`);
             setUploadProgress(progress);
@@ -472,6 +485,14 @@ const FileTransferComponent = ({ fetchStoredFiles }) => {
                                 <h3>Upload Progress</h3>
                                 <progress value={uploadProgress} max="100"></progress>
                                 <p>{uploadProgress}%</p>
+                                {currentCircuit.current && (
+                                    <FileRoutingVisualizer
+                                        circuit={circuitBuilder.current.getCircuit(currentCircuit.current)}
+                                        currentChunk={currentRoutingChunk}
+                                        totalChunks={totalRoutingChunks}
+                                        transferDirection={transferDirection}
+                                    />
+                                )}
                             </div>
                         )}
                         {uploadProgress === 100 && (
@@ -483,6 +504,14 @@ const FileTransferComponent = ({ fetchStoredFiles }) => {
                                 <h3>Download Progress</h3>
                                 <progress value={downloadProgress} max="100"></progress>
                                 <p>{downloadProgress}%</p>
+                                {currentCircuit.current && (
+                                    <FileRoutingVisualizer
+                                        circuit={circuitBuilder.current.getCircuit(currentCircuit.current)}
+                                        currentChunk={currentRoutingChunk}
+                                        totalChunks={totalRoutingChunks}
+                                        transferDirection="inbound"
+                                    />
+                                )}
                             </div>
                         )}
                         {downloadProgress === 100 && (
