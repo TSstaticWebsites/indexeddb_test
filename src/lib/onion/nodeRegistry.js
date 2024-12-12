@@ -41,18 +41,71 @@ export class NodeRegistry {
    * @private
    */
   setupSignalingHandlers() {
+    // Log connection establishment events
+    this.signaling.addEventListener('open', () => {
+      console.log(`[Node ${this.localNodeId.slice(0, 8)}] Connected to signaling server`);
+      console.log(`[Node ${this.localNodeId.slice(0, 8)}] Initial role: ${this.role}`);
+    });
+
+    this.signaling.addEventListener('close', () => {
+      console.log(`[Node ${this.localNodeId.slice(0, 8)}] Disconnected from signaling server`);
+    });
+
+    this.signaling.addEventListener('error', (error) => {
+      console.error(`[Node ${this.localNodeId.slice(0, 8)}] WebSocket error:`, error);
+    });
+
+    // Handle incoming messages with detailed logging
     this.signaling.addEventListener('message', async (message) => {
       const data = JSON.parse(message.data);
+      const timestamp = new Date().toISOString();
+
       switch (data.type) {
         case 'node_announce':
+          console.log(`[Node ${this.localNodeId.slice(0, 8)}] ${timestamp} New node announced:`, {
+            nodeId: data.nodeId.slice(0, 8),
+            role: data.role,
+            region: data.location?.region || 'unknown'
+          });
           await this.handleNodeAnnouncement(data);
           break;
+
         case 'node_status':
+          console.log(`[Node ${this.localNodeId.slice(0, 8)}] ${timestamp} Node status update:`, {
+            nodeId: data.nodeId.slice(0, 8),
+            status: data.status,
+            role: data.role
+          });
           await this.handleNodeStatus(data);
           break;
+
         case 'node_validation':
+          console.log(`[Node ${this.localNodeId.slice(0, 8)}] ${timestamp} Node validation request:`, {
+            fromNode: data.nodeId.slice(0, 8),
+            targetNode: data.targetNodeId.slice(0, 8)
+          });
           await this.handleNodeValidation(data);
           break;
+
+        case 'circuit_build':
+          console.log(`[Node ${this.localNodeId.slice(0, 8)}] ${timestamp} Circuit build request:`, {
+            circuitId: data.circuitId.slice(0, 8),
+            role: this.role,
+            position: data.position
+          });
+          break;
+
+        case 'file_transfer':
+          console.log(`[Node ${this.localNodeId.slice(0, 8)}] ${timestamp} File transfer event:`, {
+            circuitId: data.circuitId.slice(0, 8),
+            chunkIndex: data.chunkIndex,
+            totalChunks: data.totalChunks,
+            direction: data.direction
+          });
+          break;
+
+        default:
+          console.log(`[Node ${this.localNodeId.slice(0, 8)}] ${timestamp} Unknown message type:`, data.type);
       }
     });
   }
