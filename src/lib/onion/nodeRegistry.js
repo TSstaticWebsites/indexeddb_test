@@ -66,11 +66,20 @@ export class NodeRegistry {
     try {
       this.role = role;
       const keys = await this.crypto.createCircuitKeys(1);
+      const location = await this.getApproximateLocation();
+
       const announcement = {
         type: 'node_announce',
         nodeId: this.localNodeId,
         role: this.role,
         status: this.status,
+        location: {
+          latitude: location.latitude,
+          longitude: location.longitude,
+          accuracy: location.accuracy,
+          region: location.region,
+          rttProfile: location.rttProfile
+        },
         publicKey: await this.crypto.arrayBufferToBase64(
           await crypto.subtle.exportKey('spki', keys[0].publicKey)
         )
@@ -98,6 +107,7 @@ export class NodeRegistry {
     this.nodes.set(data.nodeId, {
       role: data.role,
       status: data.status,
+      location: data.location,
       publicKey: await crypto.subtle.importKey(
         'spki',
         this.crypto.base64ToArrayBuffer(data.publicKey),
@@ -318,7 +328,52 @@ export class NodeRegistry {
    * @returns {Promise<Object>} Approximate geolocation data
    */
   async getApproximateLocation() {
-    // Use RTT measurements to known endpoints for coarse location
+    let location = {
+      latitude: null,
+      longitude: null,
+      accuracy: null,
+      region: null
+    };
+
+    try {
+      // Try browser geolocation first
+      if (navigator.geolocation) {
+        const position = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: false,
+            timeout: 5000,
+            maximumAge: 300000
+          });
+        });
+
+        location = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+          region: await this.determineRegion()
+        };
+      }
+    } catch (error) {
+      console.warn('Browser geolocation failed:', error);
+    }
+
+    // Fallback to IP-based geolocation
+    if (!location.latitude || !location.longitude) {
+      try {
+        const response = await fetch('https://ipapi.co/json/');
+        const data = await response.json();
+        location = {
+          latitude: parseFloat(data.latitude),
+          longitude: parseFloat(data.longitude),
+          accuracy: 10000, // IP geolocation is less accurate (10km)
+          region: data.region
+        };
+      } catch (error) {
+        console.warn('IP geolocation failed:', error);
+      }
+    }
+
+    // Use RTT measurements as additional data
     const rttMeasurements = await Promise.all([
       this.measureLatency('us-east'),
       this.measureLatency('eu-west'),
@@ -326,6 +381,7 @@ export class NodeRegistry {
     ]);
 
     return {
+      ...location,
       rttProfile: rttMeasurements,
       timestamp: Date.now()
     };
@@ -601,11 +657,36 @@ export class NodeRegistry {
   }
 
   determineRegion(node) {
-    if (!node.capabilities?.geolocation) return 'unknown';
-    const rtts = node.capabilities.geolocation.rttProfile;
-    const minRTT = Math.min(...rtts);
-    const minIndex = rtts.indexOf(minRTT);
-    return ['us', 'eu', 'ap'][minIndex] || 'unknown';
+    // Use precise location data if available
+    if (node?.location?.latitude && node?.location?.longitude) {
+      const regions = {
+        'NA': { minLat: 15, maxLat: 72, minLng: -168, maxLng: -52 },  // North America
+        'EU': { minLat: 36, maxLat: 71, minLng: -11, maxLng: 40 },    // Europe
+        'AS': { minLat: -10, maxLat: 77, minLng: 40, maxLng: 180 },   // Asia
+        'SA': { minLat: -56, maxLat: 15, minLng: -81, maxLng: -34 },  // South America
+        'AF': { minLat: -35, maxLat: 37, minLng: -18, maxLng: 52 },   // Africa
+        'OC': { minLat: -47, maxLat: -10, minLng: 110, maxLng: 180 }  // Oceania
+      };
+
+      for (const [region, bounds] of Object.entries(regions)) {
+        if (node.location.latitude >= bounds.minLat &&
+            node.location.latitude <= bounds.maxLat &&
+            node.location.longitude >= bounds.minLng &&
+            node.location.longitude <= bounds.maxLng) {
+          return region;
+        }
+      }
+    }
+
+    // Fallback to RTT profile if precise location not available
+    if (node?.capabilities?.geolocation?.rttProfile) {
+      const rtts = node.capabilities.geolocation.rttProfile;
+      const minRTT = Math.min(...rtts);
+      const minIndex = rtts.indexOf(minRTT);
+      return ['NA', 'EU', 'AS'][minIndex] || 'UN';
+    }
+
+    return 'UN'; // Unknown region
   }
 
   /**
