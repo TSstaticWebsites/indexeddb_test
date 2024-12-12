@@ -41,7 +41,7 @@ export class NodeRegistry {
    * @private
    */
   setupSignalingHandlers() {
-    this.signaling.on('message', async (message) => {
+    this.signaling.addEventListener('message', async (message) => {
       const data = JSON.parse(message.data);
       switch (data.type) {
         case 'node_announce':
@@ -577,33 +577,46 @@ export class NodeRegistry {
   ensureGeographicDiversity(nodes) {
     const regions = new Map();
     return nodes.filter(node => {
-      const capabilities = this.nodes.get(node.nodeId)?.capabilities;
-      if (!capabilities?.geolocation) return false;
-
-      const region = this.determineRegion(capabilities.geolocation);
+      const region = this.determineRegion(node);
       if (!regions.has(region)) {
         regions.set(region, 1);
         return true;
       }
-
-      if (regions.get(region) < 2) {
-        regions.set(region, regions.get(region) + 1);
+      const count = regions.get(region);
+      if (count < 2) { // Allow max 2 nodes per region
+        regions.set(region, count + 1);
         return true;
       }
-
       return false;
     });
   }
 
-  determineRegion(geolocation) {
-    const [usRtt, euRtt, apRtt] = geolocation.rttProfile;
+  determineRegion(node) {
+    if (!node.capabilities?.geolocation) return 'unknown';
+    const rtts = node.capabilities.geolocation.rttProfile;
+    const minRTT = Math.min(...rtts);
+    const minIndex = rtts.indexOf(minRTT);
+    return ['us', 'eu', 'ap'][minIndex] || 'unknown';
+  }
 
-    const rtts = [
-      { region: 'us', rtt: usRtt },
-      { region: 'eu', rtt: euRtt },
-      { region: 'ap', rtt: apRtt }
-    ];
+  /**
+   * Select initial role for this node
+   * @private
+   * @returns {NodeRole} Selected role
+   */
+  selectInitialRole() {
+    // Start as relay by default for better network stability
+    return NodeRole.RELAY;
+  }
 
-    return rtts.reduce((a, b) => a.rtt < b.rtt ? a : b).region;
+  /**
+   * Select new role during rotation
+   * @private
+   * @returns {NodeRole} New role
+   */
+  selectNewRole() {
+    const roles = [NodeRole.RELAY, NodeRole.ENTRY, NodeRole.EXIT];
+    const currentIndex = roles.indexOf(this.role);
+    return roles[(currentIndex + 1) % roles.length];
   }
 }
