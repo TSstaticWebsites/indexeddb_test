@@ -1,0 +1,104 @@
+.monitoring-dashboard {
+  background: #f8f9fa;
+  border-radius: 12px;
+  padding: 20px;
+  margin: 20px 0;
+}
+
+.dashboard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  padding-bottom: 15px;
+  border-bottom: 1px solid #dee2e6;
+}
+
+.dashboard-header h2 {
+  margin: 0;
+  color: #212529;
+}
+
+.network-stats {
+  display: flex;
+  gap: 20px;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px 15px;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+}
+
+.stat-label {
+  font-size: 12px;
+  color: #6c757d;
+  margin-bottom: 4px;
+}
+
+.stat-value {
+  font-size: 16px;
+  font-weight: bold;
+  color: #212529;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
+}
+
+.grid-item {
+  background: white;
+  border-radius: 8px;
+  padding: 15px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+}
+
+.grid-item h3 {
+  margin: 0 0 15px 0;
+  color: #495057;
+  font-size: 16px;
+}
+
+.network-topology {
+  grid-column: 1 / 2;
+  grid-row: 1 / 2;
+}
+
+.geographic-distribution {
+  grid-column: 2 / 3;
+  grid-row: 1 / 2;
+}
+
+.circuit-health {
+  grid-column: 1 / 2;
+  grid-row: 2 / 3;
+}
+
+.file-routing {
+  grid-column: 2 / 3;
+  grid-row: 2 / 3;
+}
+
+@media (max-width: 1200px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .network-topology,
+  .geographic-distribution,
+  .circuit-health,
+  .file-routing {
+    grid-column: 1;
+  }
+
+  .network-topology { grid-row: 1; }
+  .geographic-distribution { grid-row: 2; }
+  .circuit-health { grid-row: 3; }
+  .file-routing { grid-row: 4; }
+}
