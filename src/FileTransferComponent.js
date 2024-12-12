@@ -3,6 +3,7 @@ import { getFile, getAllFiles, addFile } from './db';
 import { LayeredEncryption } from './lib/onion/crypto';
 import { NodeRegistry } from './lib/onion/nodeRegistry';
 import { CircuitBuilder, CircuitStatus } from './lib/onion/circuitBuilder';
+import NodeControls from './components/NodeControls';
 import './FileTransferComponent.css';
 
 const configuration = {
