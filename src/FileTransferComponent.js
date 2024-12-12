@@ -4,7 +4,7 @@ import { LayeredEncryption } from './lib/onion/crypto';
 import { NodeRegistry } from './lib/onion/nodeRegistry';
 import { CircuitBuilder, CircuitStatus } from './lib/onion/circuitBuilder';
 import NodeControls from './components/NodeControls';
-import FileRoutingVisualizer from './components/FileRoutingVisualizer';
+import MonitoringDashboard from './components/MonitoringDashboard';
 import './FileTransferComponent.css';
 
 const configuration = {
@@ -439,6 +439,16 @@ const FileTransferComponent = ({ fetchStoredFiles }) => {
                             )}
                         </div>
                     )}
+                    {isConnectedToSignaling && (
+                        <MonitoringDashboard
+                            circuit={currentCircuit.current}
+                            circuitBuilder={circuitBuilder.current}
+                            nodeRegistry={nodeRegistry.current}
+                            currentChunk={currentRoutingChunk}
+                            totalChunks={totalRoutingChunks}
+                            transferDirection={transferDirection}
+                        />
+                    )}
                 </div>
             ) : (
                 <div className="transfer-controls">
@@ -485,14 +495,6 @@ const FileTransferComponent = ({ fetchStoredFiles }) => {
                                 <h3>Upload Progress</h3>
                                 <progress value={uploadProgress} max="100"></progress>
                                 <p>{uploadProgress}%</p>
-                                {currentCircuit.current && (
-                                    <FileRoutingVisualizer
-                                        circuit={circuitBuilder.current.getCircuit(currentCircuit.current)}
-                                        currentChunk={currentRoutingChunk}
-                                        totalChunks={totalRoutingChunks}
-                                        transferDirection={transferDirection}
-                                    />
-                                )}
                             </div>
                         )}
                         {uploadProgress === 100 && (
@@ -504,20 +506,21 @@ const FileTransferComponent = ({ fetchStoredFiles }) => {
                                 <h3>Download Progress</h3>
                                 <progress value={downloadProgress} max="100"></progress>
                                 <p>{downloadProgress}%</p>
-                                {currentCircuit.current && (
-                                    <FileRoutingVisualizer
-                                        circuit={circuitBuilder.current.getCircuit(currentCircuit.current)}
-                                        currentChunk={currentRoutingChunk}
-                                        totalChunks={totalRoutingChunks}
-                                        transferDirection="inbound"
-                                    />
-                                )}
                             </div>
                         )}
                         {downloadProgress === 100 && (
                             <p className="success-message">Download completed successfully!</p>
                         )}
                     </div>
+
+                    <MonitoringDashboard
+                        circuit={currentCircuit.current}
+                        circuitBuilder={circuitBuilder.current}
+                        nodeRegistry={nodeRegistry.current}
+                        currentChunk={currentRoutingChunk}
+                        totalChunks={totalRoutingChunks}
+                        transferDirection={transferDirection}
+                    />
                 </div>
             )}
         </div>
