@@ -178,4 +178,122 @@ describe('NodeRegistry', () => {
     expect(relays[0]).toHaveProperty('nodeId');
     expect(relays[0]).toHaveProperty('publicKey');
   });
+
+  describe('Node Role Management and Rotation', () => {
+    test('should initialize with weighted role distribution', () => {
+      const roles = new Array(100).fill(null).map(() => new NodeRegistry(mockSignaling).role);
+      const relayCount = roles.filter(r => r === NodeRole.RELAY).length;
+      const entryCount = roles.filter(r => r === NodeRole.ENTRY).length;
+      const exitCount = roles.filter(r => r === NodeRole.EXIT).length;
+
+      expect(relayCount).toBeGreaterThan(entryCount);
+      expect(relayCount).toBeGreaterThan(exitCount);
+      expect(entryCount + exitCount + relayCount).toBe(100);
+    });
+
+    test('should rotate roles after timeout', () => {
+      jest.useFakeTimers();
+      const initialRole = nodeRegistry.role;
+
+      jest.advanceTimersByTime(31 * 60 * 1000); // 31 minutes
+      nodeRegistry.updateStatus(NodeStatus.AVAILABLE);
+
+      expect(nodeRegistry.role).not.toBe(initialRole);
+      jest.useRealTimers();
+    });
+  });
+
+  describe('Node Capability Evaluation', () => {
+    test('should calculate node score based on multiple factors', () => {
+      const capabilities = {
+        maxBandwidth: 1024 * 1024, // 1 MB/s
+        latency: 100, // 100ms
+        reliability: 0.95,
+        uptime: 12 * 60 * 60 * 1000 // 12 hours
+      };
+
+      const score = nodeRegistry.calculateNodeScore(capabilities);
+      expect(score).toBeGreaterThan(0);
+      expect(score).toBeLessThanOrEqual(1);
+    });
+
+    test('should enforce minimum requirements for relay selection', () => {
+      const poorCapabilities = {
+        maxBandwidth: 10 * 1024, // 10 KB/s
+        latency: 2000, // 2s
+        reliability: 0.5,
+        uptime: 1 * 60 * 1000 // 1 minute
+      };
+
+      expect(nodeRegistry.evaluateNodeCapabilities(poorCapabilities)).toBeFalsy();
+    });
+  });
+
+  describe('Geographic Diversity and Privacy', () => {
+    test('should ensure geographic diversity in relay selection', () => {
+      const mockNodes = [
+        { nodeId: '1', capabilities: { geolocation: { rttProfile: [50, 150, 200] } } }, // US
+        { nodeId: '2', capabilities: { geolocation: { rttProfile: [150, 50, 200] } } }, // EU
+        { nodeId: '3', capabilities: { geolocation: { rttProfile: [200, 150, 50] } } }  // AP
+      ];
+
+      const diverseNodes = nodeRegistry.ensureGeographicDiversity(mockNodes);
+      const regions = new Set(diverseNodes.map(node =>
+        nodeRegistry.determineRegion(node.capabilities.geolocation)
+      ));
+
+      expect(regions.size).toBeGreaterThan(1);
+    });
+
+    test('should limit nodes per region for enhanced anonymity', () => {
+      const sameRegionNodes = Array(5).fill(null).map((_, i) => ({
+        nodeId: String(i),
+        capabilities: { geolocation: { rttProfile: [50, 150, 200] } } // All US
+      }));
+
+      const selected = nodeRegistry.ensureGeographicDiversity(sameRegionNodes);
+      expect(selected.length).toBeLessThanOrEqual(2); // Max 2 per region
+    });
+  });
+
+  describe('Browser-Only Implementation', () => {
+    test('should use only browser-compatible APIs', () => {
+      const mockRTCPeerConnection = {
+        createDataChannel: jest.fn(),
+        createOffer: jest.fn().mockResolvedValue({}),
+        setLocalDescription: jest.fn(),
+        close: jest.fn()
+      };
+      global.RTCPeerConnection = jest.fn().mockImplementation(() => mockRTCPeerConnection);
+
+      expect(() => nodeRegistry.measureBandwidth()).not.toThrow();
+      expect(global.RTCPeerConnection).toHaveBeenCalled();
+    });
+
+    test('should maintain anonymity through circuit building', async () => {
+      const relays = await nodeRegistry.getSuitableRelays(3);
+
+      // Verify minimum circuit length
+      expect(relays.length).toBeGreaterThanOrEqual(3);
+
+      // Verify role diversity
+      const roles = relays.map(r => r.role);
+      expect(roles).toContain(NodeRole.ENTRY);
+      expect(roles).toContain(NodeRole.EXIT);
+      expect(roles.filter(r => r === NodeRole.RELAY).length).toBeGreaterThan(0);
+    });
+  });
 });
+
+function getMockCapabilities(overrides = {}) {
+  return {
+    maxBandwidth: 500 * 1024, // 500KB/s
+    latency: 100, // 100ms
+    reliability: 0.9,
+    uptime: 6 * 60 * 60 * 1000, // 6 hours
+    geolocation: {
+      rttProfile: [100, 200, 300]
+    },
+    ...overrides
+  };
+}

@@ -25,8 +25,14 @@ export class NodeRegistry {
     this.signaling = signaling;
     this.crypto = new LayeredEncryption();
     this.localNodeId = crypto.randomUUID();
-    this.role = NodeRole.RELAY;
+    this.role = this.selectInitialRole();
     this.status = NodeStatus.AVAILABLE;
+    this.startTime = Date.now();
+    this.successfulTransfers = 0;
+    this.totalTransfers = 0;
+    this.bandwidthSamples = [];
+    this.lastBandwidthMeasurement = null;
+    this.lastRoleRotation = Date.now();
     this.setupSignalingHandlers();
   }
 
@@ -133,27 +139,47 @@ export class NodeRegistry {
   }
 
   /**
-   * Discover available relay nodes
+   * Discover available relay nodes with enhanced anonymity properties
    * @param {NodeRole} role - Optional role to filter nodes by
    * @returns {Promise<Array<{nodeId: string, role: NodeRole, status: NodeStatus}>>}
    */
   async discoverNodes(role = null) {
     const discovery = {
       type: 'node_discovery',
-      requestId: crypto.randomUUID()
+      requestId: crypto.randomUUID(),
+      capabilities: {
+        bandwidth: this.getAvailableBandwidth(),
+        latency: await this.measureLatency(),
+        geolocation: await this.getApproximateLocation(),
+        uptime: Date.now() - this.startTime,
+        reliability: this.getReliabilityScore()
+      }
     };
     this.signaling.send(JSON.stringify(discovery));
 
-    // Wait for responses and filter stale nodes
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Wait for responses and filter nodes
+    await new Promise(resolve => setTimeout(resolve, 2000));
     const now = Date.now();
+
+    // Get active nodes and filter based on enhanced criteria
     const activeNodes = Array.from(this.nodes.entries())
-      .filter(([_, node]) => now - node.lastSeen < 30000)
-      .filter(([_, node]) => !role || node.role === role)
+      .filter(([_, node]) => {
+        // Basic availability checks
+        if (now - node.lastSeen > 30000) return false;
+        if (role && node.role !== role) return false;
+
+        // Enhanced anonymity checks
+        if (!this.hasGeographicDiversity(node)) return false;
+        if (!this.meetsReliabilityThreshold(node)) return false;
+        if (!this.hasAcceptableLatency(node)) return false;
+
+        return true;
+      })
       .map(([nodeId, node]) => ({
         nodeId,
         role: node.role,
-        status: node.status
+        status: node.status,
+        capabilities: node.capabilities
       }));
 
     return activeNodes;
@@ -194,7 +220,7 @@ export class NodeRegistry {
   }
 
   /**
-   * Evaluate node capabilities for reliability
+   * Evaluate node capabilities for reliability and anonymity requirements
    * @private
    * @param {Object} capabilities - Node capabilities data
    * @returns {boolean} Whether the node meets minimum requirements
@@ -202,9 +228,22 @@ export class NodeRegistry {
   evaluateNodeCapabilities(capabilities) {
     const MIN_BANDWIDTH = 50 * 1024; // 50 KB/s
     const MAX_LATENCY = 1000; // 1 second
+    const MIN_UPTIME = 5 * 60 * 1000; // 5 minutes
+    const MIN_RELIABILITY = 0.8; // 80% success rate
 
+    // Basic capability checks
+    if (!capabilities.maxBandwidth || !capabilities.latency ||
+        !capabilities.uptime || !capabilities.reliability) {
+      return false;
+    }
+
+    // Verify all requirements are met
     return capabilities.maxBandwidth >= MIN_BANDWIDTH &&
-           capabilities.latency <= MAX_LATENCY;
+           capabilities.latency <= MAX_LATENCY &&
+           capabilities.uptime >= MIN_UPTIME &&
+           capabilities.reliability >= MIN_RELIABILITY &&
+           this.hasGeographicDiversity({ capabilities }) &&
+           this.meetsReliabilityThreshold({ capabilities });
   }
 
   /**
@@ -245,46 +284,326 @@ export class NodeRegistry {
    * @returns {number} Available bandwidth in bytes per second
    */
   getAvailableBandwidth() {
-    // In a real implementation, this would measure actual network conditions
-    // For now, return a reasonable default
-    return 1024 * 1024; // 1 MB/s
+    // Use navigator.connection if available
+    if (navigator.connection) {
+      const connection = navigator.connection;
+      if (connection.downlink) {
+        return connection.downlink * 1024 * 1024 / 8; // Convert Mbps to Bytes/s
+      }
+    }
+    return 1024 * 1024; // Fallback: 1 MB/s
   }
 
   /**
-   * Update local node status
+   * Get reliability score based on successful operations
+   * @private
+   * @returns {number} Score between 0 and 1
+   */
+  getReliabilityScore() {
+    return this.successfulTransfers / Math.max(1, this.totalTransfers);
+  }
+
+  /**
+   * Get approximate location using RTT measurements
+   * @private
+   * @returns {Promise<Object>} Approximate geolocation data
+   */
+  async getApproximateLocation() {
+    // Use RTT measurements to known endpoints for coarse location
+    const rttMeasurements = await Promise.all([
+      this.measureLatency('us-east'),
+      this.measureLatency('eu-west'),
+      this.measureLatency('ap-east')
+    ]);
+
+    return {
+      rttProfile: rttMeasurements,
+      timestamp: Date.now()
+    };
+  }
+
+  /**
+   * Check if node adds geographic diversity to the network
+   * @private
+   * @param {Object} node - Node to check
+   * @returns {boolean} Whether node adds geographic diversity
+   */
+  hasGeographicDiversity(node) {
+    if (!node.capabilities?.geolocation) return false;
+
+    // Compare RTT profiles to ensure nodes are geographically distributed
+    const existingProfiles = Array.from(this.nodes.values())
+      .filter(n => n.capabilities?.geolocation)
+      .map(n => n.capabilities.geolocation.rttProfile);
+
+    return !existingProfiles.some(profile =>
+      this.isRTTProfileSimilar(profile, node.capabilities.geolocation.rttProfile)
+    );
+  }
+
+  /**
+   * Compare RTT profiles for similarity
+   * @private
+   * @param {Array} profile1 - First RTT profile
+   * @param {Array} profile2 - Second RTT profile
+   * @returns {boolean} Whether profiles are similar
+   */
+  isRTTProfileSimilar(profile1, profile2) {
+    const SIMILARITY_THRESHOLD = 50; // ms
+    return profile1.every((rtt, i) =>
+      Math.abs(rtt - profile2[i]) < SIMILARITY_THRESHOLD
+    );
+  }
+
+  /**
+   * Check if node meets reliability threshold
+   * @private
+   * @param {Object} node - Node to check
+   * @returns {boolean} Whether node is reliable
+   */
+  meetsReliabilityThreshold(node) {
+    const MIN_RELIABILITY = 0.8;
+    return node.capabilities?.reliability >= MIN_RELIABILITY;
+  }
+
+  /**
+   * Check if node has acceptable latency
+   * @private
+   * @param {Object} node - Node to check
+   * @returns {boolean} Whether node has acceptable latency
+   */
+  hasAcceptableLatency(node) {
+    const MAX_LATENCY = 1000; // 1 second
+    return node.capabilities?.latency <= MAX_LATENCY;
+  }
+
+  /**
+   * Track successful transfer completion
+   * @private
+   */
+  recordTransferSuccess() {
+    this.successfulTransfers++;
+    this.totalTransfers++;
+  }
+
+  /**
+   * Track failed transfer
+   * @private
+   */
+  recordTransferFailure() {
+    this.totalTransfers++;
+  }
+
+  /**
+   * Get reliability score based on successful operations
+   * @private
+   * @returns {number} Score between 0 and 1
+   */
+  getReliabilityScore() {
+    if (this.totalTransfers === 0) return 1.0; // New nodes start with perfect score
+    return this.successfulTransfers / this.totalTransfers;
+  }
+
+  /**
+   * Get node uptime in milliseconds
+   * @private
+   * @returns {number} Uptime in milliseconds
+   */
+  getUptime() {
+    return Date.now() - this.startTime;
+  }
+
+  /**
+   * Measure available bandwidth using WebRTC data channels
+   * @private
+   * @returns {Promise<number>} Available bandwidth in bytes per second
+   */
+  async measureBandwidth() {
+    const now = Date.now();
+
+    // Only measure bandwidth every 30 seconds
+    if (this.lastBandwidthMeasurement &&
+        now - this.lastBandwidthMeasurement < 30000) {
+      return this.bandwidthSamples[this.bandwidthSamples.length - 1] || 1024 * 1024;
+    }
+
+    try {
+      // Create temporary data channel for measurement
+      const pc1 = new RTCPeerConnection();
+      const pc2 = new RTCPeerConnection();
+      const dc1 = pc1.createDataChannel('bandwidth-test');
+
+      // Set up connection
+      pc2.ondatachannel = (event) => {
+        const dc2 = event.channel;
+        dc2.onmessage = (e) => {
+          const endTime = performance.now();
+          const duration = endTime - startTime;
+          const bytesPerSecond = (TEST_SIZE / duration) * 1000;
+
+          this.bandwidthSamples.push(bytesPerSecond);
+          if (this.bandwidthSamples.length > 5) {
+            this.bandwidthSamples.shift();
+          }
+
+          this.lastBandwidthMeasurement = now;
+          pc1.close();
+          pc2.close();
+        };
+      };
+
+      // Connect peers
+      const offer = await pc1.createOffer();
+      await pc1.setLocalDescription(offer);
+      await pc2.setRemoteDescription(offer);
+      const answer = await pc2.createAnswer();
+      await pc2.setLocalDescription(answer);
+      await pc1.setRemoteDescription(answer);
+
+      // Wait for connection
+      await new Promise(resolve => {
+        const checkState = () => {
+          if (dc1.readyState === 'open') {
+            resolve();
+          } else {
+            setTimeout(checkState, 100);
+          }
+        };
+        checkState();
+      });
+
+      // Send test data
+      const TEST_SIZE = 1024 * 256; // 256KB
+      const testData = new Uint8Array(TEST_SIZE);
+      const startTime = performance.now();
+      dc1.send(testData);
+
+      // Return average of recent samples
+      return this.bandwidthSamples.reduce((a, b) => a + b, 0) /
+             Math.max(1, this.bandwidthSamples.length);
+    } catch (error) {
+      console.warn('Bandwidth measurement failed:', error);
+      return 1024 * 1024; // Fallback: 1 MB/s
+    }
+  }
+
+  /**
+   * Update local node status and handle role rotation
    * @param {NodeStatus} status - New status
    */
   updateStatus(status) {
     this.status = status;
+
+    // Rotate roles every 30 minutes
+    const ROLE_ROTATION_INTERVAL = 30 * 60 * 1000;
+    if (Date.now() - this.lastRoleRotation > ROLE_ROTATION_INTERVAL) {
+      this.role = this.selectNewRole();
+      this.lastRoleRotation = Date.now();
+    }
+
     const statusUpdate = {
       type: 'node_status',
       nodeId: this.localNodeId,
-      status: this.status
+      status: this.status,
+      role: this.role
     };
     this.signaling.send(JSON.stringify(statusUpdate));
   }
 
   /**
-   * Get a list of suitable relay nodes for circuit building
-   * @param {number} count - Number of nodes needed
-   * @returns {Promise<Array<{nodeId: string, publicKey: CryptoKey}>>}
+   * Get suitable relays for circuit building with enhanced selection criteria
+   * @param {number} count - Number of relays needed
+   * @returns {Promise<Array<{nodeId: string, role: NodeRole}>>}
    */
   async getSuitableRelays(count) {
-    const nodes = await this.discoverNodes(NodeRole.RELAY);
-    const available = nodes.filter(node => node.status === NodeStatus.AVAILABLE);
-    const validated = await Promise.all(
-      available.map(async node => ({
-        ...node,
-        isValid: await this.validateNode(node.nodeId)
-      }))
-    );
+    // Get all available relays
+    const allNodes = await this.discoverNodes();
 
-    return validated
-      .filter(node => node.isValid)
-      .slice(0, count)
-      .map(node => ({
-        nodeId: node.nodeId,
-        publicKey: this.nodes.get(node.nodeId).publicKey
-      }));
+    // Filter and sort nodes by capability score
+    const validated = allNodes
+      .filter(node => {
+        const capabilities = this.nodes.get(node.nodeId)?.capabilities;
+        return capabilities && this.evaluateNodeCapabilities(capabilities);
+      })
+      .sort((a, b) => {
+        const capA = this.nodes.get(a.nodeId).capabilities;
+        const capB = this.nodes.get(b.nodeId).capabilities;
+        return this.calculateNodeScore(capB) - this.calculateNodeScore(capA);
+      });
+
+    // Ensure geographic diversity in selection
+    const diverseNodes = this.ensureGeographicDiversity(validated);
+
+    // Select nodes based on role requirements
+    const selected = [];
+    const roles = [NodeRole.ENTRY, ...Array(count - 2).fill(NodeRole.RELAY), NodeRole.EXIT];
+
+    for (const requiredRole of roles) {
+      const suitable = diverseNodes.filter(node =>
+        node.role === requiredRole &&
+        !selected.includes(node)
+      );
+
+      if (suitable.length === 0) return []; // Can't build circuit
+
+      // Select randomly from top 3 candidates to prevent predictability
+      const topCandidates = suitable.slice(0, Math.min(3, suitable.length));
+      const selected_node = topCandidates[Math.floor(Math.random() * topCandidates.length)];
+      selected.push(selected_node);
+    }
+
+    return selected;
+  }
+
+  calculateNodeScore(capabilities) {
+    const weights = {
+      bandwidth: 0.3,
+      latency: 0.2,
+      reliability: 0.3,
+      uptime: 0.2
+    };
+
+    const scores = {
+      bandwidth: Math.min(capabilities.maxBandwidth / (1024 * 1024), 1),
+      latency: Math.max(0, 1 - capabilities.latency / 1000),
+      reliability: capabilities.reliability,
+      uptime: Math.min(capabilities.uptime / (24 * 60 * 60 * 1000), 1)
+    };
+
+    return Object.entries(weights).reduce((total, [metric, weight]) =>
+      total + (scores[metric] * weight), 0);
+  }
+
+  ensureGeographicDiversity(nodes) {
+    const regions = new Map();
+    return nodes.filter(node => {
+      const capabilities = this.nodes.get(node.nodeId)?.capabilities;
+      if (!capabilities?.geolocation) return false;
+
+      const region = this.determineRegion(capabilities.geolocation);
+      if (!regions.has(region)) {
+        regions.set(region, 1);
+        return true;
+      }
+
+      if (regions.get(region) < 2) {
+        regions.set(region, regions.get(region) + 1);
+        return true;
+      }
+
+      return false;
+    });
+  }
+
+  determineRegion(geolocation) {
+    const [usRtt, euRtt, apRtt] = geolocation.rttProfile;
+
+    const rtts = [
+      { region: 'us', rtt: usRtt },
+      { region: 'eu', rtt: euRtt },
+      { region: 'ap', rtt: apRtt }
+    ];
+
+    return rtts.reduce((a, b) => a.rtt < b.rtt ? a : b).region;
   }
 }
