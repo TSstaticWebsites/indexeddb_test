@@ -51,16 +51,50 @@ const FileTransferComponent = ({ fetchStoredFiles }) => {
     };
 
     const setupConnection = async () => {
-        // Initialize onion routing components
-        layeredEncryption.current = new LayeredEncryption();
-        nodeRegistry.current = new NodeRegistry(new WebSocket(process.env.REACT_APP_SIGNALING_SERVER));
-        circuitBuilder.current = new CircuitBuilder(nodeRegistry.current, layeredEncryption.current);
-
-        // Register as a relay node
-        await nodeRegistry.current.registerAsNode();
-        setConnectionMessage('Registered as relay node. Building circuit...');
-
         try {
+            // Initialize onion routing components
+            layeredEncryption.current = new LayeredEncryption();
+            const nodeId = crypto.randomUUID();
+            // Get base URL without trailing slash and ensure single /ws path
+            const baseUrl = process.env.REACT_APP_SIGNALING_SERVER.replace(/\/ws\/?$/, '');
+            const wsUrl = `${baseUrl}/ws/${nodeId}`;
+            console.log('Connecting to WebSocket URL:', wsUrl);
+            const ws = new WebSocket(wsUrl);
+
+            // Set error handler before initializing NodeRegistry
+            ws.onerror = (error) => {
+                console.error('WebSocket connection error:', error);
+                setConnectionMessage('Failed to connect to signaling server. Please check your connection and try again.');
+            };
+
+            // Wait for WebSocket connection
+            await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => reject(new Error('WebSocket connection timeout')), 5000);
+                ws.onopen = () => {
+                    clearTimeout(timeout);
+                    console.log('WebSocket connection established');
+                    resolve();
+                };
+                ws.onerror = (error) => {
+                    clearTimeout(timeout);
+                    console.error('WebSocket connection failed:', error);
+                    reject(error);
+                };
+            });
+
+            nodeRegistry.current = new NodeRegistry(ws);
+            circuitBuilder.current = new CircuitBuilder(nodeRegistry.current, layeredEncryption.current);
+
+            // Register as a relay node
+            try {
+                await nodeRegistry.current.registerAsNode();
+                setConnectionMessage('Registered as relay node. Building circuit...');
+            } catch (error) {
+                console.error('Failed to register as node:', error);
+                setConnectionMessage('Failed to register with the network. Please try again.');
+                return;
+            }
+
             // Build circuit with 3 hops
             const { circuitId, status } = await circuitBuilder.current.buildCircuit(3);
             currentCircuit.current = circuitId;

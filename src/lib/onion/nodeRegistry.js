@@ -63,19 +63,28 @@ export class NodeRegistry {
    * @returns {Promise<void>}
    */
   async registerAsNode(role = NodeRole.RELAY) {
-    this.role = role;
-    const keys = await this.crypto.createCircuitKeys(1);
-    const announcement = {
-      type: 'node_announce',
-      nodeId: this.localNodeId,
-      role: this.role,
-      status: this.status,
-      publicKey: await this.crypto.arrayBufferToBase64(
-        await crypto.subtle.exportKey('spki', keys[0].publicKey)
-      )
-    };
+    try {
+      this.role = role;
+      const keys = await this.crypto.createCircuitKeys(1);
+      const announcement = {
+        type: 'node_announce',
+        nodeId: this.localNodeId,
+        role: this.role,
+        status: this.status,
+        publicKey: await this.crypto.arrayBufferToBase64(
+          await crypto.subtle.exportKey('spki', keys[0].publicKey)
+        )
+      };
 
-    this.signaling.send(JSON.stringify(announcement));
+      if (this.signaling.readyState === WebSocket.OPEN) {
+        this.signaling.send(JSON.stringify(announcement));
+      } else {
+        throw new Error('WebSocket connection not open');
+      }
+    } catch (error) {
+      console.error('Failed to register node:', error);
+      throw error;
+    }
   }
 
   /**
