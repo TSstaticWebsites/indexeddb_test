@@ -189,31 +189,40 @@ const FileTransferComponent = ({ fetchStoredFiles }) => {
             setIsConnectedToSignaling(false);
         };
 
-        signalingServer.current.onmessage = async (event) => {
-            let message;
-
-            if (event.data instanceof Blob) {
-                const text = await event.data.text();
-                message = JSON.parse(text);
-                console.log('received from signal server:', message);
-            } else {
-                message = JSON.parse(event.data);
-                console.log('received from signal server:', message);
-            }
+        // Register WebRTC signaling handler with NodeRegistry
+        nodeRegistry.current.registerWebRTCHandler(async (data) => {
             try {
-                if (message.type === 'offer') {
-                    signalServerOfferHandling(message);
-                } else if (message.type === 'answer') {
-                    signalServerAnswerHandling(message);
-                } else if (message.type === 'ice-candidate') {
-                    signalServerIceHandling(message);
+                if (data.type === 'offer') {
+                    await signalServerOfferHandling(data);
+                } else if (data.type === 'answer') {
+                    await signalServerAnswerHandling(data);
+                } else if (data.type === 'ice-candidate') {
+                    await signalServerIceHandling(data);
                 } else {
-                    console.warn('Unknown signaling message type:', message.type);
+                    console.warn('Unknown signaling message type:', data.type);
                 }
             } catch (error) {
                 console.error('Error handling signaling message:', error);
             }
-        };
+        });
+
+        // Register circuit handler for WebRTC messages
+        nodeRegistry.current.registerCircuitHandler(async (data) => {
+            if (data.type === 'webrtc') {
+                const message = data.payload;
+                try {
+                    if (message.type === 'offer') {
+                        await signalServerOfferHandling(message);
+                    } else if (message.type === 'answer') {
+                        await signalServerAnswerHandling(message);
+                    } else if (message.type === 'ice-candidate') {
+                        await signalServerIceHandling(message);
+                    }
+                } catch (error) {
+                    console.error('Error handling circuit WebRTC message:', error);
+                }
+            }
+        });
     };
 
     const signalServerOfferHandling = async (data) => {
@@ -222,20 +231,26 @@ const FileTransferComponent = ({ fetchStoredFiles }) => {
             return;
         }
 
-        console.log('Received offer:', data.offer);
+        console.log('Received offer through circuit:', data.offer);
 
         await peerConnection.current.setRemoteDescription(
             new RTCSessionDescription(data.offer)
         );
 
         const answer = await peerConnection.current.createAnswer();
-
         await peerConnection.current.setLocalDescription(answer);
 
-        signalingServer.current.send(
-            JSON.stringify({ type: 'answer', answer })
-        );
-        console.log('Sent answer:', answer);
+        // Send answer through circuit
+        if (currentCircuit.current) {
+            await circuitBuilder.current.sendThroughCircuit(
+                currentCircuit.current,
+                new TextEncoder().encode(JSON.stringify({
+                    type: 'webrtc',
+                    payload: { type: 'answer', answer }
+                }))
+            );
+        }
+        console.log('Sent answer through circuit:', answer);
     };
 
     const signalServerAnswerHandling = async (data) => {
@@ -244,7 +259,7 @@ const FileTransferComponent = ({ fetchStoredFiles }) => {
             return;
         }
 
-        console.log('Received answer:', data.answer);
+        console.log('Received answer through circuit:', data.answer);
         await peerConnection.current.setRemoteDescription(
             new RTCSessionDescription(data.answer)
         );
@@ -261,9 +276,17 @@ const FileTransferComponent = ({ fetchStoredFiles }) => {
         const offer = await peerConnection.current.createOffer();
         await peerConnection.current.setLocalDescription(offer);
 
-        const message = JSON.stringify({ type: 'offer', offer });
-        signalingServer.current.send(message);
-        console.log('SDP offer create:', message);
+        // Send offer through circuit
+        if (currentCircuit.current) {
+            await circuitBuilder.current.sendThroughCircuit(
+                currentCircuit.current,
+                new TextEncoder().encode(JSON.stringify({
+                    type: 'webrtc',
+                    payload: { type: 'offer', offer }
+                }))
+            );
+        }
+        console.log('SDP offer sent through circuit:', offer);
     };
 
     const sendVideo = async () => {
