@@ -84,11 +84,6 @@
   grid-row: 1 / 2;
 }
 
-.geographic-distribution {
-  grid-column: 2 / 3;
-  grid-row: 1 / 2;
-}
-
 .circuit-health {
   grid-column: 1 / 2;
   grid-row: 2 / 3;
@@ -147,14 +142,12 @@
   }
 
   .network-topology,
-  .geographic-distribution,
   .circuit-health,
   .file-routing {
     grid-column: 1;
   }
 
   .network-topology { grid-row: 1; }
-  .geographic-distribution { grid-row: 2; }
-  .circuit-health { grid-row: 3; }
-  .file-routing { grid-row: 4; }
+  .circuit-health { grid-row: 2; }
+  .file-routing { grid-row: 3; }
 }

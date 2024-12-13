@@ -3,8 +3,9 @@
  * Handles peer discovery and validation through WebSocket signaling
  */
 
-import { SimpleEventEmitter } from './eventEmitter';
-import { LayeredEncryption } from './crypto';
+import { NodeRole } from './types';
+import { NodeStatus } from './types';
+import { CONNECTION_CONSTANTS } from './constants';
 
 // Node roles in the network
 export const NodeRole = {
@@ -211,8 +212,7 @@ export class NodeRegistry {
         this.keyPair = await this.keyPairPromise;
       }
 
-      const location = await this.getApproximateLocation();
-      console.log(`[Node Registration] Got location:`, location);
+      console.log(`[Node Registration] Registering as ${role} node`);
 
       // Use provided role or get from URL, fallback to RELAY
       const role = providedRole || this.selectInitialRole();
@@ -220,6 +220,22 @@ export class NodeRegistry {
 
       // Set initial status to WAITING
       this.status = NodeStatus.WAITING;
+
+      // Add local node to nodes Map
+      this.nodes.set(this.localNodeId, {
+        role: role,
+        status: this.status,
+        publicKey: this.keyPair.publicKey,
+        lastSeen: Date.now()
+      });
+
+      // Emit nodeRegistered event for local node
+      this.eventEmitter.emit('nodeRegistered', this.localNodeId);
+      console.log(`[Node Registration] Added local node to registry:`, {
+        nodeId: this.localNodeId.slice(0, 8),
+        role: role,
+        status: this.status
+      });
 
       // Wait for WebSocket connection to be ready
       if (!this.signaling || this.signaling.readyState !== WebSocket.OPEN) {
@@ -255,7 +271,6 @@ export class NodeRegistry {
         nodeId: this.localNodeId,
         role: role,
         status: NodeStatus.WAITING,
-        location: location,
         publicKey: await crypto.subtle.exportKey(
           'spki',
           this.keyPair.publicKey
@@ -429,7 +444,6 @@ export class NodeRegistry {
       capabilities: {
         bandwidth: this.getAvailableBandwidth(),
         latency: await this.measureLatency(),
-        geolocation: await this.getApproximateLocation(),
         uptime: Date.now() - this.startTime,
         reliability: this.getReliabilityScore()
       }
@@ -445,7 +459,7 @@ export class NodeRegistry {
       .filter(([nodeId, node]) => {
         // During waiting period, include all recently seen nodes
         if (this.status === NodeStatus.WAITING) {
-          return (now - node.lastSeen <= 30000) && nodeId !== this.localNodeId;
+          return (now - node.lastSeen <= 30000); // Include all recent nodes, including local
         }
 
         // Basic availability checks
@@ -453,7 +467,6 @@ export class NodeRegistry {
         if (role && node.role !== role) return false;
 
         // Enhanced anonymity checks only after waiting period
-        if (!this.hasGeographicDiversity(node)) return false;
         if (!this.meetsReliabilityThreshold(node)) return false;
         if (!this.hasAcceptableLatency(node)) return false;
 
@@ -465,6 +478,10 @@ export class NodeRegistry {
         status: node.status,
         capabilities: node.capabilities
       }));
+
+    console.log(`[Node Discovery] Found ${activeNodes.length} active nodes:`,
+      activeNodes.map(n => ({ id: n.nodeId.slice(0, 8), role: n.role, status: n.status }))
+    );
 
     return activeNodes;
   }
@@ -504,30 +521,21 @@ export class NodeRegistry {
   }
 
   /**
-   * Evaluate node capabilities for reliability and anonymity requirements
+   * Evaluate node capabilities
    * @private
-   * @param {Object} capabilities - Node capabilities data
-   * @returns {boolean} Whether the node meets minimum requirements
+   * @returns {Object} Node capabilities
    */
-  evaluateNodeCapabilities(capabilities) {
-    const MIN_BANDWIDTH = 50 * 1024; // 50 KB/s
-    const MAX_LATENCY = 1000; // 1 second
-    const MIN_UPTIME = 5 * 60 * 1000; // 5 minutes
-    const MIN_RELIABILITY = 0.8; // 80% success rate
+  async evaluateNodeCapabilities() {
+    const latency = await this.measureLatency();
+    const bandwidth = this.getAvailableBandwidth();
+    const reliability = this.getReliabilityScore();
 
-    // Basic capability checks
-    if (!capabilities.maxBandwidth || !capabilities.latency ||
-        !capabilities.uptime || !capabilities.reliability) {
-      return false;
-    }
-
-    // Verify all requirements are met
-    return capabilities.maxBandwidth >= MIN_BANDWIDTH &&
-           capabilities.latency <= MAX_LATENCY &&
-           capabilities.uptime >= MIN_UPTIME &&
-           capabilities.reliability >= MIN_RELIABILITY &&
-           this.hasGeographicDiversity({ capabilities }) &&
-           this.meetsReliabilityThreshold({ capabilities });
+    return {
+      latency,
+      maxBandwidth: bandwidth,
+      reliability,
+      timestamp: Date.now()
+    };
   }
 
   /**
@@ -578,88 +586,25 @@ export class NodeRegistry {
     return 1024 * 1024; // Fallback: 1 MB/s
   }
 
-
-
   /**
-   * Get approximate location using RTT measurements
-   * @private
-   * @returns {Promise<Object>} Approximate geolocation data
-   */
-  async getApproximateLocation() {
-    try {
-      // Try to get precise location first
-      const position = await new Promise((resolve, reject) => {
-        if (!navigator.geolocation) {
-          reject(new Error('Geolocation not supported'));
-          return;
-        }
-        navigator.geolocation.getCurrentPosition(resolve, reject, {
-          timeout: 5000,
-          maximumAge: 300000
-        });
-      });
-
-      return {
-        latitude: position.coords.latitude,
-        longitude: position.coords.longitude,
-        accuracy: position.coords.accuracy,
-        timestamp: position.timestamp
-      };
-    } catch (error) {
-      console.warn('Geolocation failed, using IP-based fallback:', error);
-
-      // Fallback to approximate location using predefined regions
-      const fallbackRegions = [
-        { region: 'NA', latitude: 37.0902, longitude: -95.7129 }, // USA
-        { region: 'EU', latitude: 51.1657, longitude: 10.4515 }, // Germany
-        { region: 'AS', latitude: 35.6762, longitude: 139.6503 }, // Japan
-      ];
-
-      // Select a random region for diversity
-      const fallback = fallbackRegions[Math.floor(Math.random() * fallbackRegions.length)];
-
-      // Add some randomization within the region
-      return {
-        latitude: fallback.latitude + (Math.random() - 0.5) * 2,
-        longitude: fallback.longitude + (Math.random() - 0.5) * 2,
-        accuracy: 1000,
-        timestamp: Date.now(),
-        isFallback: true
-      };
-    }
-  }
-
-  /**
-   * Check if node adds geographic diversity to the network
+   * Check if node meets reliability threshold
    * @private
    * @param {Object} node - Node to check
-   * @returns {boolean} Whether node adds geographic diversity
+   * @returns {boolean} Whether node is reliable
    */
-  hasGeographicDiversity(node) {
-    if (!node.capabilities?.geolocation) return false;
-
-    // Compare RTT profiles to ensure nodes are geographically distributed
-    const existingProfiles = Array.from(this.nodes.values())
-      .filter(n => n.capabilities?.geolocation)
-      .map(n => n.capabilities.geolocation.rttProfile);
-
-    return !existingProfiles.some(profile =>
-      this.isRTTProfileSimilar(profile, node.capabilities.geolocation.rttProfile)
-    );
+  meetsReliabilityThreshold(node) {
+    const MIN_RELIABILITY = 0.8;
+    return node.capabilities?.reliability >= MIN_RELIABILITY;
   }
 
   /**
-   * Compare RTT profiles for similarity
+   * Compare node performance profiles
    * @private
-   * @param {Array} profile1 - First RTT profile
-   * @param {Array} profile2 - Second RTT profile
-   * @returns {boolean} Whether profiles are similar
+   * @param {Object} node - Node to check
+   * @returns {boolean} Whether performance is acceptable
    */
-  isRTTProfileSimilar(profile1, profile2) {
-    const SIMILARITY_THRESHOLD = 50; // ms
-    return profile1.every((rtt, i) =>
-      Math.abs(rtt - profile2[i]) < SIMILARITY_THRESHOLD
-    );
+  isRTTProfileSimilar(node) {
+    return this.hasAcceptableLatency(node);
   }
 
   /**
@@ -801,6 +746,13 @@ export class NodeRegistry {
   updateStatus(status) {
     this.status = status;
 
+    // Update local node in Map
+    const localNode = this.nodes.get(this.localNodeId);
+    if (localNode) {
+      localNode.status = status;
+      localNode.lastSeen = Date.now();
+    }
+
     // Rotate roles every 30 minutes
     const ROLE_ROTATION_INTERVAL = 30 * 60 * 1000;
     if (Date.now() - this.lastRoleRotation > ROLE_ROTATION_INTERVAL) {
@@ -818,118 +770,52 @@ export class NodeRegistry {
   }
 
   /**
-   * Get suitable relays for circuit building with enhanced selection criteria
-   * @param {number} count - Number of relays needed
-   * @returns {Promise<Array<{nodeId: string, role: NodeRole}>>}
+   * Get suitable relay nodes for circuit building
+   * @private
+   * @returns {Promise<Array>} Array of suitable relay nodes
    */
-  async getSuitableRelays(count) {
-    // Get all available relays
-    const allNodes = await this.discoverNodes();
-
-    // Filter and sort nodes by capability score
-    const validated = allNodes
-      .filter(node => {
-        const capabilities = this.nodes.get(node.nodeId)?.capabilities;
-        return capabilities && this.evaluateNodeCapabilities(capabilities);
-      })
-      .sort((a, b) => {
-        const capA = this.nodes.get(a.nodeId).capabilities;
-        const capB = this.nodes.get(b.nodeId).capabilities;
-        return this.calculateNodeScore(capB) - this.calculateNodeScore(capA);
-      });
-
-    // Ensure geographic diversity in selection
-    const diverseNodes = this.ensureGeographicDiversity(validated);
-
-    // Select nodes based on role requirements
-    const selected = [];
-    const roles = [NodeRole.ENTRY, ...Array(count - 2).fill(NodeRole.RELAY), NodeRole.EXIT];
-
-    for (const requiredRole of roles) {
-      const suitable = diverseNodes.filter(node =>
-        node.role === requiredRole &&
-        !selected.includes(node)
+  async getSuitableRelays() {
+    const validated = Array.from(this.nodes.values())
+      .filter(node =>
+        node.status === NodeStatus.AVAILABLE &&
+        this.hasAcceptableLatency(node) &&
+        this.meetsReliabilityThreshold(node)
       );
 
-      if (suitable.length === 0) return []; // Can't build circuit
-
-      // Select randomly from top 3 candidates to prevent predictability
-      const topCandidates = suitable.slice(0, Math.min(3, suitable.length));
-      const selected_node = topCandidates[Math.floor(Math.random() * topCandidates.length)];
-      selected.push(selected_node);
+    if (validated.length === 0) {
+      console.warn('[Node Registry] No suitable relay nodes found');
+      return [];
     }
 
-    return selected;
+    // Sort by performance score
+    const suitable = validated.sort((a, b) =>
+      this.calculateNodeScore(b.capabilities) -
+      this.calculateNodeScore(a.capabilities)
+    );
+
+    return suitable;
   }
 
   calculateNodeScore(capabilities) {
     const weights = {
-      bandwidth: 0.3,
-      latency: 0.2,
-      reliability: 0.3,
-      uptime: 0.2
+      bandwidth: 0.35,
+      latency: 0.35,
+      reliability: 0.3
     };
 
     const scores = {
       bandwidth: Math.min(capabilities.maxBandwidth / (1024 * 1024), 1),
       latency: Math.max(0, 1 - capabilities.latency / 1000),
-      reliability: capabilities.reliability,
-      uptime: Math.min(capabilities.uptime / (24 * 60 * 60 * 1000), 1)
+      reliability: capabilities.reliability
     };
 
     return Object.entries(weights).reduce((total, [metric, weight]) =>
       total + (scores[metric] * weight), 0);
   }
 
-  ensureGeographicDiversity(nodes) {
-    const regions = new Map();
-    return nodes.filter(node => {
-      const region = this.determineRegion(node);
-      if (!regions.has(region)) {
-        regions.set(region, 1);
-        return true;
-      }
-      const count = regions.get(region);
-      if (count < 2) { // Allow max 2 nodes per region
-        regions.set(region, count + 1);
-        return true;
-      }
-      return false;
-    });
-  }
 
-  determineRegion(node) {
-    // Use precise location data if available
-    if (node?.location?.latitude && node?.location?.longitude) {
-      const regions = {
-        'NA': { minLat: 15, maxLat: 72, minLng: -168, maxLng: -52 },  // North America
-        'EU': { minLat: 36, maxLat: 71, minLng: -11, maxLng: 40 },    // Europe
-        'AS': { minLat: -10, maxLat: 77, minLng: 40, maxLng: 180 },   // Asia
-        'SA': { minLat: -56, maxLat: 15, minLng: -81, maxLng: -34 },  // South America
-        'AF': { minLat: -35, maxLat: 37, minLng: -18, maxLng: 52 },   // Africa
-        'OC': { minLat: -47, maxLat: -10, minLng: 110, maxLng: 180 }  // Oceania
-      };
 
-      for (const [region, bounds] of Object.entries(regions)) {
-        if (node.location.latitude >= bounds.minLat &&
-            node.location.latitude <= bounds.maxLat &&
-            node.location.longitude >= bounds.minLng &&
-            node.location.longitude <= bounds.maxLng) {
-          return region;
-        }
-      }
-    }
 
-    // Fallback to RTT profile if precise location not available
-    if (node?.capabilities?.geolocation?.rttProfile) {
-      const rtts = node.capabilities.geolocation.rttProfile;
-      const minRTT = Math.min(...rtts);
-      const minIndex = rtts.indexOf(minRTT);
-      return ['NA', 'EU', 'AS'][minIndex] || 'UN';
-    }
-
-    return 'UN'; // Unknown region
-  }
 
   /**
    * Select initial role for this node

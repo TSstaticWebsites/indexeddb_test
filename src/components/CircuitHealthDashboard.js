@@ -129,12 +129,6 @@ const CircuitHealthDashboard = ({
                     <span className="label">Reliability:</span>
                     <span className="value">{node.metrics?.reliability || 0}%</span>
                   </div>
-                  {node.location && (
-                    <div className="node-metric">
-                      <span className="label">Region:</span>
-                      <span className="value">{node.location.region || 'Unknown'}</span>
-                    </div>
-                  )}
                 </div>
               </div>
             ))}

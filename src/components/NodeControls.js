@@ -3,7 +3,6 @@ import { NodeRole, NodeStatus } from '../lib/onion/nodeRegistry';
 import { CircuitStatus } from '../lib/onion/circuitBuilder';
 import { CircuitMonitor } from '../lib/onion/circuitMonitor';
 import NetworkTopology from './NetworkTopology';
-import GeographicDistribution from './GeographicDistribution';
 import CircuitHealthDashboard from './CircuitHealthDashboard';
 import FileRoutingVisualizer from './FileRoutingVisualizer';
 import './NodeControls.css';
@@ -101,11 +100,6 @@ const NodeControls = ({ nodeRegistry, circuitBuilder, currentCircuit, onCircuitC
         currentCircuit={currentCircuit}
         circuitHealth={circuitHealth}
         isWaiting={isWaiting}
-      />
-
-      <GeographicDistribution
-        nodes={availableNodes}
-        currentCircuit={currentCircuit}
       />
 
       <CircuitHealthDashboard

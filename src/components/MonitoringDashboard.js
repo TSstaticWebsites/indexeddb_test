@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import NetworkTopology from './NetworkTopology';
-import GeographicDistribution from './GeographicDistribution';
 import CircuitHealthDashboard from './CircuitHealthDashboard';
 import FileRoutingVisualizer from './FileRoutingVisualizer';
 import { CircuitStatus } from '../lib/onion/circuitBuilder';
@@ -141,15 +140,6 @@ const MonitoringDashboard = ({
                 circuit={circuit}
                 onNodeClick={handleNodeClick}
                 selectedNode={selectedNode}
-              />
-            </div>
-
-            <div className="grid-item geographic-distribution">
-              <h3>Geographic Distribution</h3>
-              <GeographicDistribution
-                nodes={Array.from(nodeRegistry.current.nodes.values())}
-                selectedNode={selectedNode}
-                onNodeSelect={handleNodeClick}
               />
             </div>
 

@@ -101,7 +101,8 @@ describe('NodeRegistry', () => {
       timestamp: Date.now(),
       capabilities: {
         maxBandwidth: 1024 * 1024,
-        latency: 100
+        latency: 100,
+        reliability: 0.9
       }
     });
 
@@ -167,7 +168,8 @@ describe('NodeRegistry', () => {
           timestamp: Date.now(),
           capabilities: {
             maxBandwidth: 1024 * 1024,
-            latency: 100
+            latency: 100,
+            reliability: 0.9
           }
         });
       });
@@ -229,33 +231,6 @@ describe('NodeRegistry', () => {
     });
   });
 
-  describe('Geographic Diversity and Privacy', () => {
-    test('should ensure geographic diversity in relay selection', () => {
-      const mockNodes = [
-        { nodeId: '1', capabilities: { geolocation: { rttProfile: [50, 150, 200] } } }, // US
-        { nodeId: '2', capabilities: { geolocation: { rttProfile: [150, 50, 200] } } }, // EU
-        { nodeId: '3', capabilities: { geolocation: { rttProfile: [200, 150, 50] } } }  // AP
-      ];
-
-      const diverseNodes = nodeRegistry.ensureGeographicDiversity(mockNodes);
-      const regions = new Set(diverseNodes.map(node =>
-        nodeRegistry.determineRegion(node.capabilities.geolocation)
-      ));
-
-      expect(regions.size).toBeGreaterThan(1);
-    });
-
-    test('should limit nodes per region for enhanced anonymity', () => {
-      const sameRegionNodes = Array(5).fill(null).map((_, i) => ({
-        nodeId: String(i),
-        capabilities: { geolocation: { rttProfile: [50, 150, 200] } } // All US
-      }));
-
-      const selected = nodeRegistry.ensureGeographicDiversity(sameRegionNodes);
-      expect(selected.length).toBeLessThanOrEqual(2); // Max 2 per region
-    });
-  });
-
   describe('Browser-Only Implementation', () => {
     test('should use only browser-compatible APIs', () => {
       const mockRTCPeerConnection = {
@@ -291,9 +266,6 @@ function getMockCapabilities(overrides = {}) {
     latency: 100, // 100ms
     reliability: 0.9,
     uptime: 6 * 60 * 60 * 1000, // 6 hours
-    geolocation: {
-      rttProfile: [100, 200, 300]
-    },
     ...overrides
   };
 }
