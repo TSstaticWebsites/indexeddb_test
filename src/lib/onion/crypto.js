@@ -181,7 +181,9 @@ export class LayeredEncryption {
    */
   arrayBufferToBase64(buffer) {
     const bytes = new Uint8Array(buffer);
-    return btoa(String.fromCharCode.apply(null, bytes));
+    const binary = String.fromCharCode.apply(null, bytes);
+    const base64 = btoa(binary);
+    return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   }
 
   /**
@@ -190,11 +192,21 @@ export class LayeredEncryption {
    * @returns {ArrayBuffer} Decoded array buffer
    */
   base64ToArrayBuffer(base64) {
-    const binaryString = atob(base64);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
+    try {
+      const standardBase64 = base64
+        .replace(/-/g, '+')
+        .replace(/_/g, '/')
+        .padEnd(base64.length + ((4 - (base64.length % 4)) % 4), '=');
+
+      const binaryString = atob(standardBase64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      return bytes.buffer;
+    } catch (error) {
+      console.error('Base64 decoding error:', error);
+      throw new Error('Invalid base64 string format');
     }
-    return bytes.buffer;
   }
 }

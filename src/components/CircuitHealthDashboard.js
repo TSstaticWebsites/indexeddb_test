@@ -1,10 +1,20 @@
 import React, { useEffect, useState } from 'react';
 import './CircuitHealthDashboard.css';
 import { CircuitStatus } from '../lib/onion/circuitBuilder';
+import { NodeStatus, CONNECTION_CONSTANTS } from '../lib/onion/nodeRegistry';
 
 const CircuitHealthDashboard = ({
-  circuit,
-  health = {},
+  circuit = {
+    bandwidth: 0,
+    status: 'WAITING',
+    nodes: []
+  },
+  health = {
+    nodeDetails: [],
+    metrics: { averageLatency: 0, reliability: 0, bandwidth: 0 },
+    healthyNodes: 0,
+    totalNodes: 0
+  },
   onStatusChange
 }) => {
   const [buildingProgress, setBuildingProgress] = useState(0);
@@ -34,9 +44,11 @@ const CircuitHealthDashboard = ({
   };
 
   const calculateNodeHealth = () => {
-    if (!health.nodeDetails) return 0;
+    if (!health || !health.nodeDetails) return 0;
+    const totalNodes = health.nodeDetails.length;
+    if (totalNodes === 0) return 0;
     const healthyNodes = health.nodeDetails.filter(n => n.status === 'AVAILABLE').length;
-    return Math.round((healthyNodes / health.nodeDetails.length) * 100);
+    return Math.round((healthyNodes / totalNodes) * 100);
   };
 
   return (
@@ -63,28 +75,39 @@ const CircuitHealthDashboard = ({
             {calculateNodeHealth()}%
           </div>
           <div className="metric-label">
-            {health.healthyNodes || 0}/{health.totalNodes || 0} nodes active
+            {health?.healthyNodes || 0}/{health?.totalNodes || 0} nodes active
+            {health?.totalNodes < CONNECTION_CONSTANTS.MIN_NODES_REQUIRED && (
+              <span className="waiting-message"> (Waiting for more nodes...)</span>
+            )}
           </div>
         </div>
 
         <div className="metric-card">
-          <h4>Latency</h4>
-          <div className={`metric-value ${getHealthStatus(100 - (health.averageLatency || 0) / 10)}`}>
-            {Math.round(health.averageLatency || 0)}ms
+          <h4>Network Latency</h4>
+          <div className="metric-value">
+            {health?.metrics?.averageLatency || 0}ms
           </div>
-          <div className="metric-label">Average response time</div>
+          <div className="metric-label">Average Response Time</div>
         </div>
 
         <div className="metric-card">
-          <h4>Bandwidth</h4>
-          <div className={`metric-value ${getHealthStatus((health.bandwidth || 0) / 1024)}`}>
-            {formatBandwidth(health.bandwidth || 0)}
+          <h4>Network Reliability</h4>
+          <div className="metric-value">
+            {health?.metrics?.reliability || 0}%
           </div>
-          <div className="metric-label">Available bandwidth</div>
+          <div className="metric-label">Connection Success Rate</div>
+        </div>
+
+        <div className="metric-card">
+          <h4>Circuit Bandwidth</h4>
+          <div className="metric-value">
+            {formatBandwidth(circuit?.bandwidth || 0)}
+          </div>
+          <div className="metric-label">Current Transfer Speed</div>
         </div>
       </div>
 
-      {health.nodeDetails && (
+      {health?.nodeDetails ? (
         <div className="node-details">
           <h4>Node Details</h4>
           <div className="node-grid">
@@ -93,15 +116,18 @@ const CircuitHealthDashboard = ({
                 <div className="node-header">
                   <span className="node-id">{node.nodeId.slice(0, 8)}...</span>
                   <span className="node-role">{node.role}</span>
+                  <span className={`node-status status-${node.status.toLowerCase()}`}>
+                    {node.status}
+                  </span>
                 </div>
                 <div className="node-metrics">
                   <div className="node-metric">
                     <span className="label">Latency:</span>
-                    <span className="value">{node.metrics.latency || 0}ms</span>
+                    <span className="value">{node.metrics?.latency || 0}ms</span>
                   </div>
                   <div className="node-metric">
                     <span className="label">Reliability:</span>
-                    <span className="value">{node.metrics.reliability || 0}%</span>
+                    <span className="value">{node.metrics?.reliability || 0}%</span>
                   </div>
                   {node.location && (
                     <div className="node-metric">
@@ -113,6 +139,10 @@ const CircuitHealthDashboard = ({
               </div>
             ))}
           </div>
+        </div>
+      ) : (
+        <div className="node-details-loading">
+          <p>Waiting for nodes to connect...</p>
         </div>
       )}
     </div>

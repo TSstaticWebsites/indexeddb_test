@@ -11,7 +11,8 @@ import { forceSimulation, forceLink, forceManyBody, forceCenter } from 'd3-force
 const NetworkTopology = ({
   nodes = [],
   currentCircuit = null,
-  circuitHealth = {}
+  circuitHealth = {},
+  isWaiting = false
 }) => {
   const [elements, setElements] = useState([]);
   const [layout, setLayout] = useState({ width: 800, height: 600 });
@@ -56,6 +57,18 @@ const NetworkTopology = ({
       justifyContent: 'center',
       alignItems: 'center',
     };
+
+    // Handle waiting state for ENTRY nodes
+    if (isWaiting && node.role === 'ENTRY') {
+      return {
+        ...baseStyle,
+        backgroundColor: '#fff3e0',
+        borderColor: '#ff9800',
+        borderWidth: 2,
+        animation: 'pulse 1.5s infinite',
+        className: 'node-waiting'
+      };
+    }
 
     if (circuit && circuit.nodes.includes(node.nodeId)) {
       return {

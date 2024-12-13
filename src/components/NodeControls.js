@@ -2,26 +2,42 @@ import React, { useState, useEffect } from 'react';
 import { NodeRole, NodeStatus } from '../lib/onion/nodeRegistry';
 import { CircuitStatus } from '../lib/onion/circuitBuilder';
 import { CircuitMonitor } from '../lib/onion/circuitMonitor';
+import NetworkTopology from './NetworkTopology';
+import GeographicDistribution from './GeographicDistribution';
+import CircuitHealthDashboard from './CircuitHealthDashboard';
+import FileRoutingVisualizer from './FileRoutingVisualizer';
 import './NodeControls.css';
 
 const NodeControls = ({ nodeRegistry, circuitBuilder, currentCircuit, onCircuitChange }) => {
   const [availableNodes, setAvailableNodes] = useState([]);
   const [circuitLength, setCircuitLength] = useState(3);
-  const [localNodeRole, setLocalNodeRole] = useState(NodeRole.RELAY);
+  const [localNodeRole, setLocalNodeRole] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('role') || NodeRole.RELAY;
+  });
   const [localNodeStatus, setLocalNodeStatus] = useState(NodeStatus.AVAILABLE);
   const [circuitHealth, setCircuitHealth] = useState(null);
   const [monitor, setMonitor] = useState(null);
+  const [isWaiting, setIsWaiting] = useState(false);
 
   useEffect(() => {
     const fetchNodes = async () => {
       const nodes = await nodeRegistry.discoverNodes();
       setAvailableNodes(nodes);
+
+      // Auto-connect for ENTRY nodes and show waiting state
+      if (localNodeRole === NodeRole.ENTRY && nodes.length < 3) {
+        setIsWaiting(true);
+      } else if (localNodeRole === NodeRole.ENTRY && nodes.length >= 3 && isWaiting) {
+        setIsWaiting(false);
+        handleCircuitLengthChange(3); // Automatically build circuit when enough nodes are available
+      }
     };
 
     fetchNodes();
     const interval = setInterval(fetchNodes, 10000);
     return () => clearInterval(interval);
-  }, [nodeRegistry]);
+  }, [nodeRegistry, localNodeRole, isWaiting]);
 
   useEffect(() => {
     if (currentCircuit && circuitBuilder && nodeRegistry) {
@@ -47,6 +63,7 @@ const NodeControls = ({ nodeRegistry, circuitBuilder, currentCircuit, onCircuitC
   }, [currentCircuit, circuitBuilder, nodeRegistry]);
 
   const handleRoleChange = async (role) => {
+    console.log(`[NodeControls] Changing role to:`, role);
     setLocalNodeRole(role);
     await nodeRegistry.registerAsNode(role);
   };
@@ -72,6 +89,40 @@ const NodeControls = ({ nodeRegistry, circuitBuilder, currentCircuit, onCircuitC
   return (
     <div className="node-controls">
       <h2>Node Management</h2>
+
+      {isWaiting && (
+        <div className="waiting-state">
+          <p>Waiting for more nodes to join the network... ({availableNodes.length}/3 nodes available)</p>
+        </div>
+      )}
+
+      <NetworkTopology
+        nodes={availableNodes}
+        currentCircuit={currentCircuit}
+        circuitHealth={circuitHealth}
+        isWaiting={isWaiting}
+      />
+
+      <GeographicDistribution
+        nodes={availableNodes}
+        currentCircuit={currentCircuit}
+      />
+
+      <CircuitHealthDashboard
+        circuit={currentCircuit}
+        health={circuitHealth}
+        transferStats={{
+          speed: circuitHealth?.bandwidth ? Math.round(circuitHealth.bandwidth / 1024) : 0,
+          efficiency: circuitHealth?.healthyNodes ? (circuitHealth.healthyNodes / circuitHealth.totalNodes) * 100 : 0
+        }}
+      />
+
+      <FileRoutingVisualizer
+        circuit={currentCircuit}
+        currentChunk={0}
+        totalChunks={100}
+        transferDirection="outbound"
+      />
 
       <div className="control-section">
         <h3>Local Node Settings</h3>
@@ -105,28 +156,6 @@ const NodeControls = ({ nodeRegistry, circuitBuilder, currentCircuit, onCircuitC
           />
           <small>Minimum 3 hops required for anonymity</small>
         </div>
-      </div>
-
-      <div className="control-section">
-        <h3>Circuit Health</h3>
-        {circuitHealth ? (
-          <div className="health-metrics">
-            <div className="metric">
-              <label>Healthy Nodes:</label>
-              <span>{circuitHealth.healthyNodes} / {circuitHealth.totalNodes}</span>
-            </div>
-            <div className="metric">
-              <label>Average Latency:</label>
-              <span>{Math.round(circuitHealth.averageLatency)}ms</span>
-            </div>
-            <div className="metric">
-              <label>Available Bandwidth:</label>
-              <span>{Math.round(circuitHealth.bandwidth / 1024)} KB/s</span>
-            </div>
-          </div>
-        ) : (
-          <p>No circuit health data available</p>
-        )}
       </div>
 
       <div className="control-section">

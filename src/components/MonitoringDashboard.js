@@ -1,8 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import NetworkTopology from './NetworkTopology';
 import GeographicDistribution from './GeographicDistribution';
 import CircuitHealthDashboard from './CircuitHealthDashboard';
 import FileRoutingVisualizer from './FileRoutingVisualizer';
+import { CircuitStatus } from '../lib/onion/circuitBuilder';
+import { NodeStatus, CONNECTION_CONSTANTS } from '../lib/onion/nodeRegistry';
 import './MonitoringDashboard.css';
 
 const MonitoringDashboard = ({
@@ -19,28 +21,75 @@ const MonitoringDashboard = ({
     activeNodes: 0,
     totalNodes: 0,
     avgLatency: 0,
-    circuitHealth: 100
+    circuitHealth: 100,
+    status: 'WAITING',
+    circuitStatus: null
   });
 
-  useEffect(() => {
-    if (!circuit || !nodeRegistry) return;
+  const updateMetrics = useCallback(() => {
+    if (!nodeRegistry?.current) {
+      setNetworkMetrics({
+        activeNodes: 0,
+        totalNodes: 0,
+        avgLatency: 0,
+        circuitHealth: 100,
+        status: 'WAITING',
+        circuitStatus: null
+      });
+      return;
+    }
 
-    const updateMetrics = () => {
-      const nodes = nodeRegistry.getNodes();
-      const activeNodes = nodes.filter(node => node.status === 'AVAILABLE').length;
+    const nodes = Array.from(nodeRegistry.current.nodes.values());
+    const activeNodes = nodes.filter(node => node.status === NodeStatus.AVAILABLE).length;
+    const waitingNodes = nodes.filter(node => node.status === NodeStatus.WAITING).length;
+    const status = waitingNodes > 0 ? 'WAITING' :
+                  activeNodes >= CONNECTION_CONSTANTS.MIN_NODES_REQUIRED ? 'READY' :
+                  'CONNECTING';
+
+    setNetworkMetrics({
+      activeNodes,
+      totalNodes: nodes.length || 1, // Include self if no other nodes
+      avgLatency: nodeRegistry.current.getAvailableBandwidth() || 0,
+      circuitHealth: circuit ? circuitBuilder.getCircuitHealth(circuit.id) : 0,
+      status,
+      circuitStatus: circuit?.status || null
+    });
+  }, [circuit, nodeRegistry, circuitBuilder]);
+
+  useEffect(() => {
+    if (!nodeRegistry?.current) return;
+
+    console.log('Setting up MonitoringDashboard event listeners');
+
+    const handleNodeUpdate = () => {
+      console.log('Node update received in MonitoringDashboard');
+      const nodes = Array.from(nodeRegistry.current.nodes.values());
+      const activeNodes = nodes.filter(node => node.status === NodeStatus.AVAILABLE).length;
+      const waitingNodes = nodes.filter(node => node.status === NodeStatus.WAITING).length;
+      const status = waitingNodes > 0 ? 'WAITING' :
+                    activeNodes >= CONNECTION_CONSTANTS.MIN_NODES_REQUIRED ? 'READY' :
+                    'CONNECTING';
 
       setNetworkMetrics({
         activeNodes,
-        totalNodes: nodes.length,
-        avgLatency: nodeRegistry.getAverageLatency(),
-        circuitHealth: circuit ? circuitBuilder.getCircuitHealth(circuit.id) : 0
+        totalNodes: nodes.length || 1,
+        avgLatency: nodeRegistry.current.getAvailableBandwidth() || 0,
+        circuitHealth: circuit ? circuitBuilder.getCircuitHealth(circuit.id) : 100,
+        status,
+        circuitStatus: circuit?.status || null
       });
     };
 
-    updateMetrics();
-    const interval = setInterval(updateMetrics, 5000);
-    return () => clearInterval(interval);
-  }, [circuit, nodeRegistry, circuitBuilder]);
+    nodeRegistry.current.eventEmitter.on('nodeRegistered', handleNodeUpdate);
+    nodeRegistry.current.eventEmitter.on('nodeDisconnected', handleNodeUpdate);
+
+    return () => {
+      if (nodeRegistry.current) {
+        nodeRegistry.current.eventEmitter.removeListener('nodeRegistered', handleNodeUpdate);
+        nodeRegistry.current.eventEmitter.removeListener('nodeDisconnected', handleNodeUpdate);
+      }
+    };
+  }, [nodeRegistry, circuit, circuitBuilder]);
 
   const handleNodeClick = (nodeId) => {
     setSelectedNode(nodeId);
@@ -59,55 +108,68 @@ const MonitoringDashboard = ({
             <span className="stat-value">{networkMetrics.activeNodes}/{networkMetrics.totalNodes}</span>
           </div>
           <div className="stat-item">
-            <span className="stat-label">Avg Latency</span>
-            <span className="stat-value">{networkMetrics.avgLatency.toFixed(2)}ms</span>
-          </div>
-          <div className="stat-item">
-            <span className="stat-label">Circuit Health</span>
-            <span className="stat-value">{networkMetrics.circuitHealth}%</span>
+            <span className="stat-label">Status</span>
+            <span className={`stat-value status-${networkMetrics.status?.toLowerCase()}`}>
+              {networkMetrics.status === 'WAITING'
+                ? `Waiting for nodes (${networkMetrics.totalNodes}/${CONNECTION_CONSTANTS.MIN_NODES_REQUIRED})`
+                : networkMetrics.status === 'CONNECTING'
+                  ? 'Establishing connections...'
+                  : networkMetrics.circuitStatus === 'BUILDING'
+                    ? 'Building Circuit...'
+                    : networkMetrics.circuitStatus || 'Ready'}
+            </span>
           </div>
         </div>
       </div>
 
       <div className="dashboard-grid">
-        <div className="grid-item network-topology">
-          <h3>Network Topology</h3>
-          <NetworkTopology
-            nodes={nodeRegistry?.getNodes() || []}
-            circuit={circuit}
-            onNodeClick={handleNodeClick}
-            selectedNode={selectedNode}
-          />
-        </div>
-
-        <div className="grid-item geographic-distribution">
-          <h3>Geographic Distribution</h3>
-          <GeographicDistribution
-            nodes={nodeRegistry?.getNodes() || []}
-            selectedNode={selectedNode}
-            onNodeSelect={handleNodeClick}
-          />
-        </div>
-
-        <div className="grid-item circuit-health">
-          <h3>Circuit Health</h3>
-          <CircuitHealthDashboard
-            circuit={circuit}
-            circuitBuilder={circuitBuilder}
-            nodeRegistry={nodeRegistry}
-          />
-        </div>
-
-        {(currentChunk > 0 || totalChunks > 0) && (
-          <div className="grid-item file-routing">
-            <h3>File Transfer Progress</h3>
-            <FileRoutingVisualizer
-              circuit={circuit}
-              currentChunk={currentChunk}
-              totalChunks={totalChunks}
-              transferDirection={transferDirection}
-            />
+        {networkMetrics.totalNodes === 0 ? (
+          <div className="loading-state">
+            <p>Connecting to network...</p>
+            <div className="loading-spinner"></div>
           </div>
+        ) : (
+          <>
+            <div className="grid-item network-topology">
+              <h3>Network Topology</h3>
+              <NetworkTopology
+                nodes={Array.from(nodeRegistry.current.nodes.values())}
+                circuit={circuit}
+                onNodeClick={handleNodeClick}
+                selectedNode={selectedNode}
+              />
+            </div>
+
+            <div className="grid-item geographic-distribution">
+              <h3>Geographic Distribution</h3>
+              <GeographicDistribution
+                nodes={Array.from(nodeRegistry.current.nodes.values())}
+                selectedNode={selectedNode}
+                onNodeSelect={handleNodeClick}
+              />
+            </div>
+
+            <div className="grid-item circuit-health">
+              <h3>Circuit Health</h3>
+              <CircuitHealthDashboard
+                circuit={circuit}
+                circuitBuilder={circuitBuilder}
+                nodeRegistry={nodeRegistry}
+              />
+            </div>
+
+            {(currentChunk > 0 || totalChunks > 0) && (
+              <div className="grid-item file-routing">
+                <h3>File Transfer Progress</h3>
+                <FileRoutingVisualizer
+                  circuit={circuit}
+                  currentChunk={currentChunk}
+                  totalChunks={totalChunks}
+                  transferDirection={transferDirection}
+                />
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

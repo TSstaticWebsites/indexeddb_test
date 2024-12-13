@@ -1,5 +1,6 @@
 import { CircuitStatus } from './circuitBuilder';
 import { NodeStatus } from './nodeRegistry';
+import { CONNECTION_CONSTANTS } from './nodeRegistry';
 
 export class CircuitMonitor {
   constructor(circuit, circuitBuilder, nodeRegistry) {
@@ -62,30 +63,88 @@ export class CircuitMonitor {
     const nodes = await this.nodeRegistry.discoverNodes();
     const circuitNodes = this.circuitBuilder.getCircuitNodes(this.circuit);
 
+    // Check if we have enough nodes before proceeding
+    const availableNodes = nodes.filter(n => n.status === NodeStatus.AVAILABLE).length;
+    const waitingNodes = nodes.filter(n => n.status === NodeStatus.WAITING).length;
+
+    if (availableNodes < CONNECTION_CONSTANTS.MIN_NODES_REQUIRED) {
+      this.notifyListeners(CircuitStatus.WAITING, {
+        availableNodes,
+        waitingNodes,
+        requiredNodes: CONNECTION_CONSTANTS.MIN_NODES_REQUIRED
+      });
+      return;
+    }
+
+    const nodeHealthDetails = [];
     let hasUnhealthyNode = false;
-    const unhealthyNodes = [];
+    let totalLatency = 0;
+    let minBandwidth = Infinity;
+    let healthyNodeCount = 0;
 
     for (const nodeId of circuitNodes) {
       const node = nodes.find(n => n.nodeId === nodeId);
+      const nodeHealth = {
+        nodeId,
+        status: node?.status || 'OFFLINE',
+        role: node?.role || 'UNKNOWN',
+        location: node?.location || null,
+        metrics: {
+          latency: null,
+          bandwidth: null,
+          reliability: null,
+          uptime: null
+        }
+      };
 
-      if (!node || node.status !== NodeStatus.AVAILABLE) {
+      if (node && node.status === NodeStatus.AVAILABLE) {
+        // Validate node capabilities and collect metrics
+        const capabilities = await this.nodeRegistry.getNodeCapabilities(nodeId);
+        const isValid = await this.nodeRegistry.validateNode(nodeId);
+
+        if (isValid) {
+          healthyNodeCount++;
+          nodeHealth.metrics = {
+            latency: capabilities.latency,
+            bandwidth: capabilities.maxBandwidth,
+            reliability: capabilities.reliability,
+            uptime: capabilities.uptime
+          };
+          totalLatency += capabilities.latency;
+          minBandwidth = Math.min(minBandwidth, capabilities.maxBandwidth);
+        } else {
+          hasUnhealthyNode = true;
+          nodeHealth.status = 'INVALID';
+        }
+      } else {
         hasUnhealthyNode = true;
-        unhealthyNodes.push(nodeId);
       }
 
-      // Validate node capabilities
-      const isValid = await this.nodeRegistry.validateNode(nodeId);
-      if (!isValid) {
-        hasUnhealthyNode = true;
-        unhealthyNodes.push(nodeId);
-      }
+      nodeHealthDetails.push(nodeHealth);
     }
 
+    const circuitHealth = {
+      totalNodes: circuitNodes.length,
+      healthyNodes: healthyNodeCount,
+      averageLatency: totalLatency / healthyNodeCount || 0,
+      bandwidth: minBandwidth === Infinity ? 0 : minBandwidth,
+      nodeDetails: nodeHealthDetails,
+      timestamp: Date.now()
+    };
+
     if (hasUnhealthyNode) {
-      this.notifyListeners(CircuitStatus.DEGRADED, { unhealthyNodes });
+      const unhealthyNodes = nodeHealthDetails
+        .filter(n => n.status !== NodeStatus.AVAILABLE)
+        .map(n => n.nodeId);
+
+      this.notifyListeners(CircuitStatus.DEGRADED, {
+        ...circuitHealth,
+        unhealthyNodes
+      });
+
       await this.handleUnhealthyNodes(unhealthyNodes);
     } else {
-      this.notifyListeners(CircuitStatus.READY);
+      this.notifyListeners(CircuitStatus.READY, circuitHealth);
     }
   }
 
@@ -154,22 +213,39 @@ export class CircuitMonitor {
       totalNodes: circuitNodes.length,
       healthyNodes: 0,
       averageLatency: 0,
-      bandwidth: Infinity
+      bandwidth: Infinity,
+      nodeMetrics: [],
+      timestamp: Date.now()
     };
 
     let totalLatency = 0;
 
     for (const nodeId of circuitNodes) {
       const node = nodes.find(n => n.nodeId === nodeId);
+      const nodeMetric = {
+        nodeId,
+        status: node?.status || 'OFFLINE',
+        role: node?.role || 'UNKNOWN',
+        location: node?.location || null
+      };
+
       if (node && node.status === NodeStatus.AVAILABLE) {
         metrics.healthyNodes++;
         const capabilities = await this.nodeRegistry.getNodeCapabilities(nodeId);
+        nodeMetric.latency = capabilities.latency;
+        nodeMetric.bandwidth = capabilities.maxBandwidth;
+        nodeMetric.reliability = capabilities.reliability;
+        nodeMetric.uptime = capabilities.uptime;
+
         totalLatency += capabilities.latency;
         metrics.bandwidth = Math.min(metrics.bandwidth, capabilities.maxBandwidth);
       }
+
+      metrics.nodeMetrics.push(nodeMetric);
     }
 
-    metrics.averageLatency = totalLatency / circuitNodes.length;
+    metrics.averageLatency = totalLatency / metrics.healthyNodes || 0;
+    metrics.bandwidth = metrics.bandwidth === Infinity ? 0 : metrics.bandwidth;
     return metrics;
   }
 }

@@ -1,5 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { geoMercator, geoPath } from 'd3-geo';
+import { select } from 'd3-selection';
+import { line } from 'd3-shape';
 import { feature } from 'topojson-client';
 import worldData from '../data/world-110m.json';
 
@@ -11,7 +13,7 @@ const GeographicDistribution = ({ nodes = [], currentCircuit = null }) => {
   useEffect(() => {
     if (!svgRef.current) return;
 
-    const svg = d3.select(svgRef.current);
+    const svg = select(svgRef.current);
     const projection = geoMercator()
       .scale(130)
       .translate([width / 2, height / 1.4]);
@@ -28,12 +30,19 @@ const GeographicDistribution = ({ nodes = [], currentCircuit = null }) => {
       .attr('stroke', '#fff')
       .attr('stroke-width', 0.5);
 
-    // Plot nodes
+    // Plot nodes with locations
+    const nodesWithLocations = nodes.filter(node => node.location);
     svg.selectAll('circle')
-      .data(nodes)
+      .data(nodesWithLocations)
       .join('circle')
-      .attr('cx', d => projection([d.location.longitude, d.location.latitude])[0])
-      .attr('cy', d => projection([d.location.longitude, d.location.latitude])[1])
+      .attr('cx', d => {
+        const coords = projection([d.location.longitude, d.location.latitude]);
+        return coords ? coords[0] : 0;
+      })
+      .attr('cy', d => {
+        const coords = projection([d.location.longitude, d.location.latitude]);
+        return coords ? coords[1] : 0;
+      })
       .attr('r', 5)
       .attr('class', d => `node ${currentCircuit?.nodes.includes(d.nodeId) ? 'circuit-node' : ''}`)
       .attr('fill', d => getNodeColor(d, currentCircuit));
@@ -50,7 +59,7 @@ const GeographicDistribution = ({ nodes = [], currentCircuit = null }) => {
         .join('path')
         .attr('class', 'circuit-line')
         .attr('d', d => {
-          return d3.line()(d);
+          return line()(d);
         })
         .attr('fill', 'none')
         .attr('stroke', '#006600')

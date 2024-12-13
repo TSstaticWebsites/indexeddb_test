@@ -1,17 +1,16 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, forwardRef, useImperativeHandle } from 'react';
 import { getFile, getAllFiles, addFile } from './db';
 import { LayeredEncryption } from './lib/onion/crypto';
 import { NodeRegistry } from './lib/onion/nodeRegistry';
 import { CircuitBuilder, CircuitStatus } from './lib/onion/circuitBuilder';
 import NodeControls from './components/NodeControls';
-import MonitoringDashboard from './components/MonitoringDashboard';
 import './FileTransferComponent.css';
 
 const configuration = {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
 };
 
-const FileTransferComponent = ({ fetchStoredFiles }) => {
+const FileTransferComponent = forwardRef(({ fetchStoredFiles }, ref) => {
     // Existing refs and state
     const dataChannel = useRef(null);
     const peerConnection = useRef(null);
@@ -43,6 +42,47 @@ const FileTransferComponent = ({ fetchStoredFiles }) => {
     const [totalRoutingChunks, setTotalRoutingChunks] = useState(0);
     const [transferDirection, setTransferDirection] = useState('outbound');
 
+    // Expose internal state via ref and handle state changes in a single effect
+    useEffect(() => {
+        if (!ref.current) return;
+
+        // Update ref values
+        ref.current.circuit = currentCircuit.current;
+        ref.current.circuitBuilder = circuitBuilder.current;
+        ref.current.nodeRegistry = nodeRegistry.current;
+        ref.current.currentChunk = currentRoutingChunk;
+        ref.current.totalChunks = totalRoutingChunks;
+        ref.current.transferDirection = transferDirection;
+
+        // Notify parent of state changes if callback exists
+        if (ref.current.onStateChange) {
+            ref.current.onStateChange({
+                circuit: currentCircuit.current,
+                circuitBuilder: circuitBuilder.current,
+                nodeRegistry: nodeRegistry.current,
+                currentChunk: currentRoutingChunk,
+                totalChunks: totalRoutingChunks,
+                transferDirection
+            });
+        }
+
+        // Subscribe to node registry state changes
+        const cleanup = nodeRegistry.current?.subscribe('stateChange', () => {
+            if (ref.current?.onStateChange) {
+                ref.current.onStateChange({
+                    circuit: currentCircuit.current,
+                    circuitBuilder: circuitBuilder.current,
+                    nodeRegistry: nodeRegistry.current,
+                    currentChunk: currentRoutingChunk,
+                    totalChunks: totalRoutingChunks,
+                    transferDirection
+                });
+            }
+        });
+
+        return () => cleanup?.();
+    }, [currentRoutingChunk, totalRoutingChunks, transferDirection]);
+
     useEffect(() => {
         const fetchVideos = async () => {
             const videos = await getAllFiles();
@@ -58,66 +98,94 @@ const FileTransferComponent = ({ fetchStoredFiles }) => {
 
     const setupConnection = async () => {
         try {
+            setCircuitStatus(CircuitStatus.CONNECTING);
+            setConnectionMessage('Initializing connection...');
+
             // Initialize onion routing components
             layeredEncryption.current = new LayeredEncryption();
             const nodeId = crypto.randomUUID();
+
             // Get base URL without trailing slash and ensure single /ws path
             const baseUrl = process.env.REACT_APP_SIGNALING_SERVER.replace(/\/ws\/?$/, '');
             const wsUrl = `${baseUrl}/ws/${nodeId}`;
             console.log('Connecting to WebSocket URL:', wsUrl);
-            const ws = new WebSocket(wsUrl);
 
-            // Set error handler before initializing NodeRegistry
-            ws.onerror = (error) => {
+            // Create WebSocket connection with proper event handlers
+            signalingServer.current = new WebSocket(wsUrl);
+
+            // Setup signaling server event handlers before attempting connection
+            signalingServer.current.onopen = () => {
+                console.log('WebSocket connection established');
+                setConnectionMessage('Connected to signaling server. Registering as node...');
+                setIsConnectedToSignaling(true);
+            };
+
+            signalingServer.current.onerror = (error) => {
                 console.error('WebSocket connection error:', error);
                 setConnectionMessage('Failed to connect to signaling server. Please check your connection and try again.');
+                setCircuitStatus(CircuitStatus.FAILED);
+                setIsConnectedToSignaling(false);
+            };
+
+            signalingServer.current.onclose = () => {
+                console.log('WebSocket connection closed');
+                setConnectionMessage('Disconnected from signaling server.');
+                setCircuitStatus(CircuitStatus.FAILED);
+                setIsConnectedToSignaling(false);
             };
 
             // Wait for WebSocket connection
             await new Promise((resolve, reject) => {
-                const timeout = setTimeout(() => reject(new Error('WebSocket connection timeout')), 5000);
-                ws.onopen = () => {
+                const timeout = setTimeout(() => {
+                    reject(new Error('WebSocket connection timeout'));
+                    signalingServer.current?.close();
+                }, 5000);
+
+                const onOpen = () => {
                     clearTimeout(timeout);
-                    console.log('WebSocket connection established');
                     resolve();
                 };
-                ws.onerror = (error) => {
+
+                const onError = (error) => {
                     clearTimeout(timeout);
-                    console.error('WebSocket connection failed:', error);
                     reject(error);
                 };
+
+                signalingServer.current.addEventListener('open', onOpen);
+                signalingServer.current.addEventListener('error', onError);
+
+                // Cleanup event listeners on timeout/error
+                const cleanup = () => {
+                    signalingServer.current?.removeEventListener('open', onOpen);
+                    signalingServer.current?.removeEventListener('error', onError);
+                };
+
+                setTimeout(cleanup, 5000);
             });
 
-            nodeRegistry.current = new NodeRegistry(ws);
+            // Initialize components after WebSocket is connected
+            nodeRegistry.current = new NodeRegistry(signalingServer.current);
             circuitBuilder.current = new CircuitBuilder(nodeRegistry.current, layeredEncryption.current);
 
             // Register as a relay node
             try {
-                await nodeRegistry.current.registerAsNode();
+                await nodeRegistry.current.registerAsNode(nodeId);
                 setConnectionMessage('Registered as relay node. Building circuit...');
+                setCircuitStatus(CircuitStatus.BUILDING);
             } catch (error) {
-                console.error('Failed to register as node:', error);
-                setConnectionMessage('Failed to register with the network. Please try again.');
-                return;
+                console.warn('Node registration error:', error);
+                setConnectionMessage(`Registration failed: ${error.message}`);
+                setCircuitStatus(CircuitStatus.FAILED);
+                throw error;
             }
 
-            // Build circuit with 3 hops
-            const { circuitId, status } = await circuitBuilder.current.buildCircuit(3);
-            currentCircuit.current = circuitId;
-            setCircuitStatus(status);
-            setCircuitHops(3);
-            setConnectionMessage('Circuit established successfully.');
+            // PLACEHOLDER: Circuit building and WebRTC initialization code
 
-            // Initialize WebRTC after circuit is ready
-            peerConnection.current = new RTCPeerConnection(configuration);
-            dataChannel.current = peerConnection.current.createDataChannel('FileTransfer');
-
-            setupDataChannel();
-            setupPeerDiscovery();
-            setupSignalingServer();
         } catch (error) {
-            console.error('Failed to build circuit:', error);
-            setConnectionMessage('Failed to establish anonymous circuit. Please try again.');
+            console.error('Setup error:', error);
+            setConnectionMessage(`Connection failed: ${error.message}`);
+            setCircuitStatus(CircuitStatus.FAILED);
+            signalingServer.current?.close();
         }
     };
 
@@ -213,6 +281,11 @@ const FileTransferComponent = ({ fetchStoredFiles }) => {
     };
 
     const setupSignalingServer = () => {
+        if (!signalingServer.current) {
+            console.error('Signaling server not initialized');
+            return;
+        }
+
         signalingServer.current.onopen = () => {
             console.log('Connected to signaling server');
             setConnectionMessage('Successfully connected to the signaling server.');
@@ -440,13 +513,10 @@ const FileTransferComponent = ({ fetchStoredFiles }) => {
                         </div>
                     )}
                     {isConnectedToSignaling && (
-                        <MonitoringDashboard
+                        <NodeControls
                             circuit={currentCircuit.current}
                             circuitBuilder={circuitBuilder.current}
                             nodeRegistry={nodeRegistry.current}
-                            currentChunk={currentRoutingChunk}
-                            totalChunks={totalRoutingChunks}
-                            transferDirection={transferDirection}
                         />
                     )}
                 </div>
@@ -513,18 +583,15 @@ const FileTransferComponent = ({ fetchStoredFiles }) => {
                         )}
                     </div>
 
-                    <MonitoringDashboard
+                    <NodeControls
                         circuit={currentCircuit.current}
                         circuitBuilder={circuitBuilder.current}
                         nodeRegistry={nodeRegistry.current}
-                        currentChunk={currentRoutingChunk}
-                        totalChunks={totalRoutingChunks}
-                        transferDirection={transferDirection}
                     />
                 </div>
             )}
         </div>
     );
-};
+});
 
 export default FileTransferComponent;

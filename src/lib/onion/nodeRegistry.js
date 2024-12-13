@@ -3,148 +3,314 @@
  * Handles peer discovery and validation through WebSocket signaling
  */
 
+import { SimpleEventEmitter } from './eventEmitter';
 import { LayeredEncryption } from './crypto';
 
 // Node roles in the network
 export const NodeRole = {
-  RELAY: 'relay',
-  EXIT: 'exit',
-  ENTRY: 'entry'
+  ENTRY: 'ENTRY',
+  RELAY: 'RELAY',
+  EXIT: 'EXIT'
 };
 
 // Node status in the network
 export const NodeStatus = {
-  AVAILABLE: 'available',
-  BUSY: 'busy',
-  OFFLINE: 'offline'
+  AVAILABLE: 'AVAILABLE',
+  BUSY: 'BUSY',
+  OFFLINE: 'OFFLINE',
+  WAITING: 'WAITING'  // New status for nodes waiting for connections
+};
+
+// Constants for connection management
+export const CONNECTION_CONSTANTS = {
+  WAITING_PERIOD: 30000,  // 30 seconds waiting period
+  MAX_RECONNECT_ATTEMPTS: 5,
+  RECONNECT_BACKOFF_MS: 1000,
+  MIN_NODES_REQUIRED: 3
 };
 
 export class NodeRegistry {
-  constructor(signaling) {
+  constructor() {
     this.nodes = new Map();
-    this.signaling = signaling;
-    this.crypto = new LayeredEncryption();
     this.localNodeId = crypto.randomUUID();
-    this.role = this.selectInitialRole();
-    this.status = NodeStatus.AVAILABLE;
+    this.eventEmitter = new SimpleEventEmitter();
+    this.crypto = new LayeredEncryption();
     this.startTime = Date.now();
     this.successfulTransfers = 0;
     this.totalTransfers = 0;
     this.bandwidthSamples = [];
     this.lastBandwidthMeasurement = null;
     this.lastRoleRotation = Date.now();
-    this.setupSignalingHandlers();
+    this.wsConnected = false;  // Add connection state tracking
+
+    // Get role from URL parameters and validate against NodeRole enum
+    const params = new URLSearchParams(window.location.search);
+    const urlRole = params.get('role');
+    this.localNodeRole = Object.values(NodeRole).includes(urlRole) ? urlRole : NodeRole.RELAY;
+    console.log('[Node Registry] Initialized with role:', this.localNodeRole, 'from URL param:', urlRole);
+
+    // Initialize WebSocket connection
+    console.log(`[Node Registry] Initializing node ${this.localNodeId.slice(0, 8)}`);
+
+    try {
+      // Get base URL without trailing slash and ensure single /ws path
+      const baseUrl = process.env.REACT_APP_SIGNALING_SERVER.replace(/\/ws\/?$/, '');
+      const wsUrl = `${baseUrl}/ws/${this.localNodeId}`;
+      console.log('Connecting to WebSocket URL:', wsUrl);
+      this.signaling = new WebSocket(wsUrl);
+
+      // Generate RSA key pair for encryption
+      this.keyPairPromise = crypto.subtle.generateKey(
+        {
+          name: 'RSA-OAEP',
+          modulusLength: 2048,
+          publicExponent: new Uint8Array([1, 0, 1]),
+          hash: 'SHA-256'
+        },
+        true,
+        ['encrypt', 'decrypt']
+      );
+
+      // Set up handlers after key pair is generated
+      this.keyPairPromise.then(keyPair => {
+        this.keyPair = keyPair;
+        this.setupSignalingHandlers();
+        // Register node after WebSocket connection is established
+        if (this.signaling.readyState === WebSocket.OPEN) {
+          this.registerAsNode(this.localNodeRole);
+        }
+      }).catch(error => {
+        console.error('[Node Registry] Failed to generate key pair:', error);
+      });
+    } catch (error) {
+      console.error('[Node Registry] Failed to initialize node:', error);
+      throw error;
+    }
+
+    // Add event listeners for node updates with detailed logging
+    this.eventEmitter.on('nodeRegistered', (nodeId) => {
+      console.log(`[Node ${this.localNodeId.slice(0, 8)}] Node registered event emitted:`, nodeId);
+      this.updateNetworkMetrics();
+    });
+
+    this.eventEmitter.on('nodeDisconnected', (nodeId) => {
+      console.log(`[Node ${this.localNodeId.slice(0, 8)}] Node disconnected event emitted:`, nodeId);
+      this.updateNetworkMetrics();
+    });
   }
 
   /**
-   * Set up WebSocket message handlers for node discovery
-   * @private
+   * Attempts to reconnect to the signaling server with exponential backoff
+   * @returns {Promise<boolean>} Success status of reconnection
+   */
+  async attemptReconnection() {
+    let attempts = 0;
+    while (attempts < CONNECTION_CONSTANTS.MAX_RECONNECT_ATTEMPTS) {
+      try {
+        const backoff = CONNECTION_CONSTANTS.RECONNECT_BACKOFF_MS * Math.pow(2, attempts);
+        console.log(`[Reconnection] Attempt ${attempts + 1}, waiting ${backoff}ms`);
+        await new Promise(resolve => setTimeout(resolve, backoff));
+
+        const baseUrl = process.env.REACT_APP_SIGNALING_SERVER.replace(/\/ws\/?$/, '');
+        const wsUrl = `${baseUrl}/ws/${this.localNodeId}`;
+        this.signaling = new WebSocket(wsUrl);
+        this.setupSignalingHandlers();
+
+        // Wait for connection to establish
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            reject(new Error('Connection timeout'));
+          }, 5000);
+
+          this.signaling.onopen = () => {
+            clearTimeout(timeout);
+            resolve();
+          };
+        });
+
+        console.log(`[Reconnection] Successfully reconnected after ${attempts + 1} attempts`);
+        return true;
+      } catch (error) {
+        console.warn(`[Reconnection] Attempt ${attempts + 1} failed:`, error);
+        attempts++;
+      }
+    }
+    console.error('[Reconnection] Max attempts reached, giving up');
+    return false;
+  }
+
+  updateNetworkMetrics() {
+    const nodes = Array.from(this.nodes.values());
+    const metrics = {
+      totalNodes: nodes.length,
+      activeNodes: nodes.filter(node => node.status === NodeStatus.WAITING || node.status === NodeStatus.AVAILABLE).length,
+      waitingNodes: nodes.filter(node => node.status === NodeStatus.WAITING).length,
+      readyNodes: nodes.filter(node => node.status === NodeStatus.AVAILABLE).length,
+      avgLatency: this.getAvailableBandwidth(),
+      avgBandwidth: this.getReliabilityScore()
+    };
+    this.eventEmitter.emit('metricsUpdated', metrics);
+  }
+
+  /**
+   * Set up WebSocket event handlers for signaling
    */
   setupSignalingHandlers() {
-    // Log connection establishment events
-    this.signaling.addEventListener('open', () => {
-      console.log(`[Node ${this.localNodeId.slice(0, 8)}] Connected to signaling server`);
-      console.log(`[Node ${this.localNodeId.slice(0, 8)}] Initial role: ${this.role}`);
-    });
+    console.log(`[Signaling] Setting up handlers for node ${this.localNodeId.slice(0, 8)}`);
 
-    this.signaling.addEventListener('close', () => {
-      console.log(`[Node ${this.localNodeId.slice(0, 8)}] Disconnected from signaling server`);
-    });
+    this.signaling.onopen = () => {
+      console.log(`[Signaling] WebSocket connected for node ${this.localNodeId.slice(0, 8)}`);
+      this.wsConnected = true;  // Update connection state
+      // Node registration is now handled by the constructor
+    };
 
-    this.signaling.addEventListener('error', (error) => {
-      console.error(`[Node ${this.localNodeId.slice(0, 8)}] WebSocket error:`, error);
-    });
+    this.signaling.onmessage = async (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        console.log(`[Signaling] Received message type: ${data.type} from ${data.nodeId?.slice(0, 8) || 'unknown'}`);
 
-    // Handle incoming messages with detailed logging
-    this.signaling.addEventListener('message', async (message) => {
-      const data = JSON.parse(message.data);
-      const timestamp = new Date().toISOString();
-
-      switch (data.type) {
-        case 'node_announce':
-          console.log(`[Node ${this.localNodeId.slice(0, 8)}] ${timestamp} New node announced:`, {
-            nodeId: data.nodeId.slice(0, 8),
-            role: data.role,
-            region: data.location?.region || 'unknown'
-          });
-          await this.handleNodeAnnouncement(data);
-          break;
-
-        case 'node_status':
-          console.log(`[Node ${this.localNodeId.slice(0, 8)}] ${timestamp} Node status update:`, {
-            nodeId: data.nodeId.slice(0, 8),
-            status: data.status,
-            role: data.role
-          });
-          await this.handleNodeStatus(data);
-          break;
-
-        case 'node_validation':
-          console.log(`[Node ${this.localNodeId.slice(0, 8)}] ${timestamp} Node validation request:`, {
-            fromNode: data.nodeId.slice(0, 8),
-            targetNode: data.targetNodeId.slice(0, 8)
-          });
-          await this.handleNodeValidation(data);
-          break;
-
-        case 'circuit_build':
-          console.log(`[Node ${this.localNodeId.slice(0, 8)}] ${timestamp} Circuit build request:`, {
-            circuitId: data.circuitId.slice(0, 8),
-            role: this.role,
-            position: data.position
-          });
-          break;
-
-        case 'file_transfer':
-          console.log(`[Node ${this.localNodeId.slice(0, 8)}] ${timestamp} File transfer event:`, {
-            circuitId: data.circuitId.slice(0, 8),
-            chunkIndex: data.chunkIndex,
-            totalChunks: data.totalChunks,
-            direction: data.direction
-          });
-          break;
-
-        default:
-          console.log(`[Node ${this.localNodeId.slice(0, 8)}] ${timestamp} Unknown message type:`, data.type);
+        switch (data.type) {
+          case 'NODE_ANNOUNCEMENT':
+            await this.handleNodeAnnouncement(data);
+            break;
+          case 'NODE_STATUS':
+            await this.handleNodeStatus(data);
+            break;
+          case 'NODE_VALIDATION':
+            await this.handleNodeValidation(data);
+            break;
+          default:
+            console.log(`[Signaling] Unhandled message type: ${data.type}`);
+        }
+      } catch (error) {
+        console.error(`[Signaling] Error handling message:`, error);
       }
-    });
+    };
+
+    this.signaling.onclose = () => {
+      console.log(`[Signaling] WebSocket closed for node ${this.localNodeId.slice(0, 8)}`);
+      this.wsConnected = false;  // Update connection state
+      this.attemptReconnection();
+    };
+
+    this.signaling.onerror = (error) => {
+      console.error(`[Signaling] WebSocket error for node ${this.localNodeId.slice(0, 8)}:`, error);
+    };
   }
 
   /**
-   * Register the current browser as a relay node
-   * @param {NodeRole} role - Role of this node in the network
-   * @returns {Promise<void>}
+   * Register this instance as a node in the network
+   * @param {NodeRole} providedRole - Role override for the node
    */
-  async registerAsNode(role = NodeRole.RELAY) {
+  async registerAsNode(providedRole) {
+    console.log(`[Node Registration] Starting registration process with WebSocket state:`, this.signaling?.readyState);
     try {
-      this.role = role;
-      const keys = await this.crypto.createCircuitKeys(1);
-      const location = await this.getApproximateLocation();
+      // Wait for key pair to be generated
+      if (!this.keyPair) {
+        console.log('[Node Registration] Waiting for key pair generation...');
+        this.keyPair = await this.keyPairPromise;
+      }
 
+      const location = await this.getApproximateLocation();
+      console.log(`[Node Registration] Got location:`, location);
+
+      // Use provided role or get from URL, fallback to RELAY
+      const role = providedRole || this.selectInitialRole();
+      console.log(`[Node Registration] Using role:`, role);
+
+      // Set initial status to WAITING
+      this.status = NodeStatus.WAITING;
+
+      // Wait for WebSocket connection to be ready
+      if (!this.signaling || this.signaling.readyState !== WebSocket.OPEN) {
+        console.log('[Node Registration] WebSocket not ready, attempting to connect...');
+        const baseUrl = process.env.REACT_APP_SIGNALING_SERVER || 'wss://app-bxlpryvg.fly.dev';
+        const wsUrl = `${baseUrl}/ws/${this.localNodeId}`;
+        console.log(`[Node Registration] Connecting to WebSocket at ${wsUrl}`);
+
+        this.signaling = new WebSocket(wsUrl);
+        this.setupSignalingHandlers();
+
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            reject(new Error('WebSocket connection timeout'));
+          }, 5000);
+
+          const onOpen = () => {
+            clearTimeout(timeout);
+            resolve();
+          };
+
+          this.signaling.addEventListener('open', onOpen);
+          this.signaling.addEventListener('error', (error) => {
+            clearTimeout(timeout);
+            reject(error);
+          });
+        });
+      }
+
+      console.log(`[Node Registration] WebSocket connected, preparing announcement`);
       const announcement = {
-        type: 'node_announce',
+        type: 'NODE_ANNOUNCEMENT',
         nodeId: this.localNodeId,
-        role: this.role,
-        status: this.status,
-        location: {
-          latitude: location.latitude,
-          longitude: location.longitude,
-          accuracy: location.accuracy,
-          region: location.region,
-          rttProfile: location.rttProfile
-        },
-        publicKey: await this.crypto.arrayBufferToBase64(
-          await crypto.subtle.exportKey('spki', keys[0].publicKey)
+        role: role,
+        status: NodeStatus.WAITING,
+        location: location,
+        publicKey: await crypto.subtle.exportKey(
+          'spki',
+          this.keyPair.publicKey
         )
       };
 
-      if (this.signaling.readyState === WebSocket.OPEN) {
-        this.signaling.send(JSON.stringify(announcement));
-      } else {
-        throw new Error('WebSocket connection not open');
-      }
+      console.log(`[Node Registration] Sending announcement:`, {
+        nodeId: announcement.nodeId.slice(0, 8),
+        role: announcement.role,
+        status: announcement.status
+      });
+
+      this.signaling.send(JSON.stringify(announcement));
+      console.log(`[Node Registration] Announcement sent successfully`);
+
+      // Start waiting period with active node discovery
+      console.log('[Node Registration] Starting waiting period with active discovery');
+      const discoveryInterval = setInterval(async () => {
+        try {
+          const nodes = await this.discoverNodes();
+          console.log(`[Node Discovery] Found ${nodes.length} nodes:`,
+            nodes.map(n => ({ id: n.nodeId.slice(0, 8), role: n.role, status: n.status }))
+          );
+          this.updateNetworkMetrics();
+        } catch (error) {
+          console.error('[Node Discovery] Error during discovery:', error);
+        }
+      }, 5000);  // Check every 5 seconds
+
+      setTimeout(() => {
+        clearInterval(discoveryInterval);  // Stop discovery interval
+        const connectedNodes = Array.from(this.nodes.values()).filter(
+          node => node.status === NodeStatus.WAITING || node.status === NodeStatus.AVAILABLE
+        ).length;
+
+        console.log(`[Node Registration] Waiting period ended. Connected nodes: ${connectedNodes}`);
+        if (connectedNodes >= CONNECTION_CONSTANTS.MIN_NODES_REQUIRED) {
+          console.log('[Node Registration] Sufficient nodes joined during waiting period');
+          this.updateStatus(NodeStatus.AVAILABLE);
+          // Notify other nodes
+          const statusUpdate = {
+            type: 'NODE_STATUS',
+            nodeId: this.localNodeId,
+            status: NodeStatus.AVAILABLE
+          };
+          this.signaling.send(JSON.stringify(statusUpdate));
+        } else {
+          console.log('[Node Registration] Not enough nodes joined during waiting period');
+          // Keep waiting for more nodes
+          this.updateNetworkMetrics();
+        }
+      }, CONNECTION_CONSTANTS.WAITING_PERIOD);
+
     } catch (error) {
-      console.error('Failed to register node:', error);
+      console.error(`[Node Registration] Registration failed:`, error);
       throw error;
     }
   }
@@ -156,6 +322,12 @@ export class NodeRegistry {
    */
   async handleNodeAnnouncement(data) {
     if (data.nodeId === this.localNodeId) return;
+
+    console.log(`[Node ${this.localNodeId.slice(0, 8)}] Processing node announcement:`, {
+      nodeId: data.nodeId.slice(0, 8),
+      role: data.role,
+      location: data.location
+    });
 
     this.nodes.set(data.nodeId, {
       role: data.role,
@@ -173,6 +345,12 @@ export class NodeRegistry {
       ),
       lastSeen: Date.now()
     });
+
+    // Emit nodeRegistered event after successfully adding the node
+    this.eventEmitter.emit('nodeRegistered', data.nodeId);
+
+    // Update network metrics after node addition
+    this.updateNetworkMetrics();
   }
 
   /**
@@ -185,6 +363,7 @@ export class NodeRegistry {
     if (node) {
       node.status = data.status;
       node.lastSeen = Date.now();
+      this.updateNetworkMetrics();
     }
   }
 
@@ -216,6 +395,34 @@ export class NodeRegistry {
    * @returns {Promise<Array<{nodeId: string, role: NodeRole, status: NodeStatus}>>}
    */
   async discoverNodes(role = null) {
+    // Wait for WebSocket connection to be ready
+    if (!this.signaling || this.signaling.readyState !== WebSocket.OPEN) {
+      console.log('[Node Registry] Waiting for WebSocket connection to be ready...');
+      try {
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            reject(new Error('WebSocket connection timeout'));
+          }, 5000);
+
+          const checkConnection = () => {
+            if (this.signaling.readyState === WebSocket.OPEN) {
+              clearTimeout(timeout);
+              resolve();
+            } else if (this.signaling.readyState === WebSocket.CLOSED || this.signaling.readyState === WebSocket.CLOSING) {
+              clearTimeout(timeout);
+              reject(new Error('WebSocket connection failed'));
+            } else {
+              setTimeout(checkConnection, 100);
+            }
+          };
+          checkConnection();
+        });
+      } catch (error) {
+        console.error('[Node Registry] Failed to establish WebSocket connection:', error);
+        return [];
+      }
+    }
+
     const discovery = {
       type: 'node_discovery',
       requestId: crypto.randomUUID(),
@@ -235,12 +442,17 @@ export class NodeRegistry {
 
     // Get active nodes and filter based on enhanced criteria
     const activeNodes = Array.from(this.nodes.entries())
-      .filter(([_, node]) => {
+      .filter(([nodeId, node]) => {
+        // During waiting period, include all recently seen nodes
+        if (this.status === NodeStatus.WAITING) {
+          return (now - node.lastSeen <= 30000) && nodeId !== this.localNodeId;
+        }
+
         // Basic availability checks
         if (now - node.lastSeen > 30000) return false;
         if (role && node.role !== role) return false;
 
-        // Enhanced anonymity checks
+        // Enhanced anonymity checks only after waiting period
         if (!this.hasGeographicDiversity(node)) return false;
         if (!this.meetsReliabilityThreshold(node)) return false;
         if (!this.hasAcceptableLatency(node)) return false;
@@ -366,14 +578,7 @@ export class NodeRegistry {
     return 1024 * 1024; // Fallback: 1 MB/s
   }
 
-  /**
-   * Get reliability score based on successful operations
-   * @private
-   * @returns {number} Score between 0 and 1
-   */
-  getReliabilityScore() {
-    return this.successfulTransfers / Math.max(1, this.totalTransfers);
-  }
+
 
   /**
    * Get approximate location using RTT measurements
@@ -381,63 +586,47 @@ export class NodeRegistry {
    * @returns {Promise<Object>} Approximate geolocation data
    */
   async getApproximateLocation() {
-    let location = {
-      latitude: null,
-      longitude: null,
-      accuracy: null,
-      region: null
-    };
-
     try {
-      // Try browser geolocation first
-      if (navigator.geolocation) {
-        const position = await new Promise((resolve, reject) => {
-          navigator.geolocation.getCurrentPosition(resolve, reject, {
-            enableHighAccuracy: false,
-            timeout: 5000,
-            maximumAge: 300000
-          });
+      // Try to get precise location first
+      const position = await new Promise((resolve, reject) => {
+        if (!navigator.geolocation) {
+          reject(new Error('Geolocation not supported'));
+          return;
+        }
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          timeout: 5000,
+          maximumAge: 300000
         });
+      });
 
-        location = {
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-          accuracy: position.coords.accuracy,
-          region: await this.determineRegion()
-        };
-      }
+      return {
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        accuracy: position.coords.accuracy,
+        timestamp: position.timestamp
+      };
     } catch (error) {
-      console.warn('Browser geolocation failed:', error);
+      console.warn('Geolocation failed, using IP-based fallback:', error);
+
+      // Fallback to approximate location using predefined regions
+      const fallbackRegions = [
+        { region: 'NA', latitude: 37.0902, longitude: -95.7129 }, // USA
+        { region: 'EU', latitude: 51.1657, longitude: 10.4515 }, // Germany
+        { region: 'AS', latitude: 35.6762, longitude: 139.6503 }, // Japan
+      ];
+
+      // Select a random region for diversity
+      const fallback = fallbackRegions[Math.floor(Math.random() * fallbackRegions.length)];
+
+      // Add some randomization within the region
+      return {
+        latitude: fallback.latitude + (Math.random() - 0.5) * 2,
+        longitude: fallback.longitude + (Math.random() - 0.5) * 2,
+        accuracy: 1000,
+        timestamp: Date.now(),
+        isFallback: true
+      };
     }
-
-    // Fallback to IP-based geolocation
-    if (!location.latitude || !location.longitude) {
-      try {
-        const response = await fetch('https://ipapi.co/json/');
-        const data = await response.json();
-        location = {
-          latitude: parseFloat(data.latitude),
-          longitude: parseFloat(data.longitude),
-          accuracy: 10000, // IP geolocation is less accurate (10km)
-          region: data.region
-        };
-      } catch (error) {
-        console.warn('IP geolocation failed:', error);
-      }
-    }
-
-    // Use RTT measurements as additional data
-    const rttMeasurements = await Promise.all([
-      this.measureLatency('us-east'),
-      this.measureLatency('eu-west'),
-      this.measureLatency('ap-east')
-    ]);
-
-    return {
-      ...location,
-      rttProfile: rttMeasurements,
-      timestamp: Date.now()
-    };
   }
 
   /**
@@ -748,8 +937,9 @@ export class NodeRegistry {
    * @returns {NodeRole} Selected role
    */
   selectInitialRole() {
-    // Start as relay by default for better network stability
-    return NodeRole.RELAY;
+    // Return the role that was set during initialization
+    console.log('[Node Registry] Using initialized role:', this.localNodeRole);
+    return this.localNodeRole;
   }
 
   /**
