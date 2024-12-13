@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import './CircuitHealthDashboard.css';
 import { CircuitStatus } from '../lib/onion/circuitBuilder';
-import { NodeStatus, CONNECTION_CONSTANTS } from '../lib/onion/nodeRegistry';
+import { NodeStatus } from '../lib/onion/types';
+import { CONNECTION_CONSTANTS } from '../lib/onion/constants';
 
 const CircuitHealthDashboard = ({
   circuit = {

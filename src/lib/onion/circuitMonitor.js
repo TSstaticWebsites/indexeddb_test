@@ -1,6 +1,6 @@
 import { CircuitStatus } from './circuitBuilder';
-import { NodeStatus } from './nodeRegistry';
-import { CONNECTION_CONSTANTS } from './nodeRegistry';
+import { NodeStatus } from './types';
+import { CONNECTION_CONSTANTS } from './constants';
 
 export class CircuitMonitor {
   constructor(circuit, circuitBuilder, nodeRegistry) {

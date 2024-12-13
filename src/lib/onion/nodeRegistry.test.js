@@ -1,4 +1,5 @@
-import { NodeRegistry, NodeRole, NodeStatus } from './nodeRegistry';
+import { NodeRegistry } from './nodeRegistry';
+import { NodeRole, NodeStatus } from './types';
 
 // Mock WebSocket
 class MockWebSocket {

@@ -3,7 +3,8 @@
  * Implements anonymous circuit creation with perfect forward secrecy
  */
 
-import { NodeRole } from './nodeRegistry';
+import { NodeRole } from './types';
+import { NodeStatus } from './types';
 
 // Circuit status
 export const CircuitStatus = {
@@ -23,10 +24,10 @@ export class CircuitBuilder {
 
   /**
    * Build a new circuit through the onion network
-   * @param {number} numHops - Number of hops in the circuit (minimum 3)
+   * @param {number} numHops - Number of hops in the circuit (minimum 2)
    * @returns {Promise<{circuitId: string, status: CircuitStatus}>}
    */
-  async buildCircuit(numHops = 3) {
+  async buildCircuit(numHops = 2) {  // Changed default from 3 to 2
     if (numHops < this.MIN_HOPS) {
       numHops = this.MIN_HOPS;
     }
@@ -40,10 +41,27 @@ export class CircuitBuilder {
     });
 
     try {
-      // Get suitable relay nodes
+      // Get suitable relay nodes based on performance metrics
       const relays = await this.nodeRegistry.getSuitableRelays(numHops);
-      if (relays.length < numHops) {
-        throw new Error('Insufficient relay nodes available');
+      console.log(`[Circuit Builder] Found ${relays.length} suitable relays for ${numHops} hops`);
+      console.log('[Circuit Builder] Available relays:', relays.map(r => ({
+        id: r.nodeId.slice(0, 8),
+        status: r.status,
+        role: r.role
+      })));
+
+      // For two-node circuits, we only need one other node
+      const requiredNodes = numHops === 2 ? 1 : numHops;
+
+      if (relays.length < requiredNodes) {
+        console.log('[Circuit Builder] Waiting for more nodes to become available...');
+        console.log(`[Circuit Builder] Current nodes: ${relays.length}, Required: ${requiredNodes}`);
+        // Emit event for UI update
+        this.nodeRegistry.eventEmitter.emit('circuitBuildingStatus', {
+          status: CircuitStatus.BUILDING,
+          message: 'Waiting for more nodes...'
+        });
+        return { circuitId, status: CircuitStatus.BUILDING };
       }
 
       // Generate circuit keys
@@ -53,15 +71,26 @@ export class CircuitBuilder {
       // Build circuit hop by hop
       let previousHop = null;
       for (let i = 0; i < numHops; i++) {
-        const node = relays[i];
-        const hop = await this.establishHop(circuitId, node, previousHop, i);
-        this.circuits.get(circuitId).hops.push(hop);
-        previousHop = hop;
+        const node = relays[i % relays.length]; // Use modulo for two-node circuits
+        console.log(`[Circuit Builder] Establishing hop ${i + 1}/${numHops} with node ${node.nodeId.slice(0, 8)} (${node.role})`);
+
+        try {
+          const hop = await this.establishHop(circuitId, node, previousHop, i);
+          this.circuits.get(circuitId).hops.push(hop);
+          previousHop = hop;
+          console.log(`[Circuit Builder] Hop ${i + 1} established successfully`);
+        } catch (error) {
+          console.error(`[Circuit Builder] Failed to establish hop ${i + 1}:`, error);
+          this.circuits.get(circuitId).status = CircuitStatus.FAILED;
+          throw error;
+        }
       }
 
+      console.log('[Circuit Builder] Circuit established successfully');
       this.circuits.get(circuitId).status = CircuitStatus.READY;
       return { circuitId, status: CircuitStatus.READY };
     } catch (error) {
+      console.error('[Circuit Builder] Failed to build circuit:', error);
       this.circuits.get(circuitId).status = CircuitStatus.FAILED;
       throw error;
     }
@@ -78,30 +107,41 @@ export class CircuitBuilder {
    */
   async establishHop(circuitId, node, previousHop, hopIndex) {
     const circuit = this.circuits.get(circuitId);
+    console.log(`[Circuit Builder] Setting up hop ${hopIndex} with node ${node.nodeId.slice(0, 8)}`);
 
     // Create WebRTC connection for this hop
     const peerConnection = new RTCPeerConnection({
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
     });
 
-    // Create data channel
+    // Create data channel with more reliable settings for two-node circuits
     const dataChannel = peerConnection.createDataChannel(`circuit-${circuitId}-${hopIndex}`, {
       ordered: true,
-      maxRetransmits: 0
+      maxRetransmits: 3
     });
 
-    // Set up connection handlers
+    // Set up connection handlers with improved logging
     const connectionPromise = new Promise((resolve, reject) => {
-      let timeoutId = setTimeout(() => reject(new Error('Connection timeout')), 30000);
+      let timeoutId = setTimeout(() => {
+        console.error(`[Circuit Builder] Connection timeout for hop ${hopIndex}`);
+        reject(new Error('Connection timeout'));
+      }, 30000);
 
       dataChannel.onopen = () => {
         clearTimeout(timeoutId);
+        console.log(`[Circuit Builder] Data channel opened for hop ${hopIndex}`);
         resolve();
       };
 
       dataChannel.onerror = (error) => {
         clearTimeout(timeoutId);
+        console.error(`[Circuit Builder] Data channel error for hop ${hopIndex}:`, error);
         reject(error);
+      };
+
+      // Add connection state change handler
+      peerConnection.onconnectionstatechange = () => {
+        console.log(`[Circuit Builder] Connection state for hop ${hopIndex}:`, peerConnection.connectionState);
       };
     });
 
@@ -136,14 +176,19 @@ export class CircuitBuilder {
       dataChannel
     });
 
-    // Wait for connection establishment
-    await connectionPromise;
-
-    return {
-      nodeId: node.nodeId,
-      hopIndex,
-      publicKey: node.publicKey
-    };
+    try {
+      // Wait for connection establishment
+      await connectionPromise;
+      console.log(`[Circuit Builder] Hop ${hopIndex} established successfully`);
+      return {
+        nodeId: node.nodeId,
+        hopIndex,
+        publicKey: node.publicKey
+      };
+    } catch (error) {
+      console.error(`[Circuit Builder] Failed to establish hop ${hopIndex}:`, error);
+      throw error;
+    }
   }
 
   /**

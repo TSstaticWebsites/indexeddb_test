@@ -7,28 +7,9 @@ import { NodeRole } from './types';
 import { NodeStatus } from './types';
 import { CONNECTION_CONSTANTS } from './constants';
 
-// Node roles in the network
-export const NodeRole = {
-  ENTRY: 'ENTRY',
-  RELAY: 'RELAY',
-  EXIT: 'EXIT'
-};
+import { LayeredEncryption } from './crypto';
+import { SimpleEventEmitter } from './eventEmitter';
 
-// Node status in the network
-export const NodeStatus = {
-  AVAILABLE: 'AVAILABLE',
-  BUSY: 'BUSY',
-  OFFLINE: 'OFFLINE',
-  WAITING: 'WAITING'  // New status for nodes waiting for connections
-};
-
-// Constants for connection management
-export const CONNECTION_CONSTANTS = {
-  WAITING_PERIOD: 30000,  // 30 seconds waiting period
-  MAX_RECONNECT_ATTEMPTS: 5,
-  RECONNECT_BACKOFF_MS: 1000,
-  MIN_NODES_REQUIRED: 2
-};
 
 export class NodeRegistry {
   constructor() {
@@ -43,12 +24,13 @@ export class NodeRegistry {
     this.lastBandwidthMeasurement = null;
     this.lastRoleRotation = Date.now();
     this.wsConnected = false;  // Add connection state tracking
+    this.status = NodeStatus.WAITING;  // Start in WAITING state
 
     // Get role from URL parameters and validate against NodeRole enum
     const params = new URLSearchParams(window.location.search);
     const urlRole = params.get('role');
-    this.localNodeRole = Object.values(NodeRole).includes(urlRole) ? urlRole : NodeRole.RELAY;
-    console.log('[Node Registry] Initialized with role:', this.localNodeRole, 'from URL param:', urlRole);
+    this.role = Object.values(NodeRole).includes(urlRole) ? urlRole : NodeRole.RELAY;
+    console.log('[Node Registry] Initialized with role:', this.role, 'from URL param:', urlRole);
 
     // Initialize WebSocket connection
     console.log(`[Node Registry] Initializing node ${this.localNodeId.slice(0, 8)}`);
@@ -78,7 +60,7 @@ export class NodeRegistry {
         this.setupSignalingHandlers();
         // Register node after WebSocket connection is established
         if (this.signaling.readyState === WebSocket.OPEN) {
-          this.registerAsNode(this.localNodeRole);
+          this.registerAsNode(this.role);
         }
       }).catch(error => {
         console.error('[Node Registry] Failed to generate key pair:', error);
@@ -141,16 +123,29 @@ export class NodeRegistry {
   }
 
   updateNetworkMetrics() {
-    const nodes = Array.from(this.nodes.values());
+    console.log('[Node Registry] Updating network metrics');
+    const connectedNodes = Array.from(this.nodes.values());
+
+    // Always include local node in metrics if it exists
+    const localNode = this.getLocalNode();
+    if (localNode && !connectedNodes.some(node => node.nodeId === localNode.nodeId)) {
+      connectedNodes.push(localNode);
+    }
+
     const metrics = {
-      totalNodes: nodes.length,
-      activeNodes: nodes.filter(node => node.status === NodeStatus.WAITING || node.status === NodeStatus.AVAILABLE).length,
-      waitingNodes: nodes.filter(node => node.status === NodeStatus.WAITING).length,
-      readyNodes: nodes.filter(node => node.status === NodeStatus.AVAILABLE).length,
-      avgLatency: this.getAvailableBandwidth(),
-      avgBandwidth: this.getReliabilityScore()
+      totalNodes: connectedNodes.length,
+      activeNodes: connectedNodes.filter(node =>
+        node.status === NodeStatus.AVAILABLE ||
+        node.status === NodeStatus.WAITING ||
+        node.nodeId === this.localNodeId
+      ).length,
+      waitingNodes: connectedNodes.filter(node => node.status === NodeStatus.WAITING).length,
+      availableNodes: connectedNodes.filter(node => node.status === NodeStatus.AVAILABLE).length
     };
+
+    console.log('[Node Registry] Network metrics:', metrics);
     this.eventEmitter.emit('metricsUpdated', metrics);
+    return metrics;
   }
 
   /**
@@ -201,171 +196,116 @@ export class NodeRegistry {
 
   /**
    * Register this instance as a node in the network
-   * @param {NodeRole} providedRole - Role override for the node
+   * @param {NodeRole} role - The role this node should take
+   * @returns {Promise<void>}
    */
-  async registerAsNode(providedRole) {
-    console.log(`[Node Registration] Starting registration process with WebSocket state:`, this.signaling?.readyState);
-    try {
-      // Wait for key pair to be generated
-      if (!this.keyPair) {
-        console.log('[Node Registration] Waiting for key pair generation...');
-        this.keyPair = await this.keyPairPromise;
-      }
+  async registerAsNode(role = null) {
+    console.log('[Node Registry] Starting node registration process');
 
-      console.log(`[Node Registration] Registering as ${role} node`);
+    // Clear any existing registration state
+    clearTimeout(this.registrationTimeout);
 
-      // Use provided role or get from URL, fallback to RELAY
-      const role = providedRole || this.selectInitialRole();
-      console.log(`[Node Registration] Using role:`, role);
+    // Set up registration timeout
+    this.registrationTimeout = setTimeout(() => {
+      console.log('[Node Registry] Registration timeout reached');
+      this.attemptReconnection();
+    }, 30000);
 
-      // Set initial status to WAITING
-      this.status = NodeStatus.WAITING;
+    // Set up WebSocket connection handler
+    const onOpen = () => {
+      console.log('[Node Registry] WebSocket connection established');
+      clearTimeout(this.registrationTimeout);
+    };
 
-      // Add local node to nodes Map
-      this.nodes.set(this.localNodeId, {
-        role: role,
-        status: this.status,
-        publicKey: this.keyPair.publicKey,
-        lastSeen: Date.now()
-      });
+    // Prepare node announcement
+    const announcement = {
+      type: 'NODE_ANNOUNCEMENT',
+      nodeId: this.localNodeId,
+      role: role || this.selectInitialRole(),
+      status: NodeStatus.WAITING,
+      timestamp: Date.now()
+    };
 
-      // Emit nodeRegistered event for local node
-      this.eventEmitter.emit('nodeRegistered', this.localNodeId);
-      console.log(`[Node Registration] Added local node to registry:`, {
-        nodeId: this.localNodeId.slice(0, 8),
-        role: role,
-        status: this.status
-      });
+    // Add local node to registry immediately
+    this.nodes.set(this.localNodeId, {
+      nodeId: this.localNodeId,
+      role: announcement.role,
+      status: NodeStatus.WAITING,
+      lastSeen: Date.now()
+    });
 
-      // Wait for WebSocket connection to be ready
-      if (!this.signaling || this.signaling.readyState !== WebSocket.OPEN) {
-        console.log('[Node Registration] WebSocket not ready, attempting to connect...');
-        const baseUrl = process.env.REACT_APP_SIGNALING_SERVER || 'wss://app-bxlpryvg.fly.dev';
-        const wsUrl = `${baseUrl}/ws/${this.localNodeId}`;
-        console.log(`[Node Registration] Connecting to WebSocket at ${wsUrl}`);
+    // Update metrics to include local node
+    this.updateNetworkMetrics();
 
-        this.signaling = new WebSocket(wsUrl);
-        this.setupSignalingHandlers();
-
-        await new Promise((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            reject(new Error('WebSocket connection timeout'));
-          }, 5000);
-
-          const onOpen = () => {
-            clearTimeout(timeout);
-            resolve();
-          };
-
-          this.signaling.addEventListener('open', onOpen);
-          this.signaling.addEventListener('error', (error) => {
-            clearTimeout(timeout);
-            reject(error);
-          });
-        });
-      }
-
-      console.log(`[Node Registration] WebSocket connected, preparing announcement`);
-      const announcement = {
-        type: 'NODE_ANNOUNCEMENT',
-        nodeId: this.localNodeId,
-        role: role,
-        status: NodeStatus.WAITING,
-        publicKey: await crypto.subtle.exportKey(
-          'spki',
-          this.keyPair.publicKey
-        )
-      };
-
-      console.log(`[Node Registration] Sending announcement:`, {
-        nodeId: announcement.nodeId.slice(0, 8),
-        role: announcement.role,
-        status: announcement.status
-      });
-
-      this.signaling.send(JSON.stringify(announcement));
-      console.log(`[Node Registration] Announcement sent successfully`);
-
-      // Start waiting period with active node discovery
-      console.log('[Node Registration] Starting waiting period with active discovery');
-      const discoveryInterval = setInterval(async () => {
-        try {
-          const nodes = await this.discoverNodes();
-          console.log(`[Node Discovery] Found ${nodes.length} nodes:`,
-            nodes.map(n => ({ id: n.nodeId.slice(0, 8), role: n.role, status: n.status }))
-          );
-          this.updateNetworkMetrics();
-        } catch (error) {
-          console.error('[Node Discovery] Error during discovery:', error);
-        }
-      }, 5000);  // Check every 5 seconds
-
-      setTimeout(() => {
-        clearInterval(discoveryInterval);  // Stop discovery interval
-        const connectedNodes = Array.from(this.nodes.values()).filter(
-          node => node.status === NodeStatus.WAITING || node.status === NodeStatus.AVAILABLE
-        ).length;
-
-        console.log(`[Node Registration] Waiting period ended. Connected nodes: ${connectedNodes}`);
-        if (connectedNodes >= CONNECTION_CONSTANTS.MIN_NODES_REQUIRED) {
-          console.log('[Node Registration] Sufficient nodes joined during waiting period');
-          this.updateStatus(NodeStatus.AVAILABLE);
-          // Notify other nodes
-          const statusUpdate = {
-            type: 'NODE_STATUS',
-            nodeId: this.localNodeId,
-            status: NodeStatus.AVAILABLE
-          };
-          this.signaling.send(JSON.stringify(statusUpdate));
-        } else {
-          console.log('[Node Registration] Not enough nodes joined during waiting period');
-          // Keep waiting for more nodes
-          this.updateNetworkMetrics();
-        }
-      }, CONNECTION_CONSTANTS.WAITING_PERIOD);
-
-    } catch (error) {
-      console.error(`[Node Registration] Registration failed:`, error);
-      throw error;
+    // Set up discovery interval
+    if (this.discoveryInterval) {
+      clearInterval(this.discoveryInterval);
     }
+
+    this.discoveryInterval = setInterval(() => {
+      if (this.signaling && this.signaling.readyState === WebSocket.OPEN) {
+        console.log('[Node Registry] Running node discovery');
+        this.discoverNodes();
+
+        // Send status update
+        const statusUpdate = {
+          type: 'STATUS_UPDATE',
+          nodeId: this.localNodeId,
+          status: this.status,
+          role: this.role,
+          timestamp: Date.now()
+        };
+
+        this.signaling.send(JSON.stringify(statusUpdate));
+        this.updateNetworkMetrics();
+      }
+    }, 5000);
+
+    // Send initial announcement
+    if (this.signaling && this.signaling.readyState === WebSocket.OPEN) {
+      console.log('[Node Registry] Sending node announcement');
+      this.signaling.send(JSON.stringify(announcement));
+    }
+
+    return announcement;
   }
 
   /**
    * Handle incoming node announcements
-   * @private
-   * @param {Object} data - Node announcement data
+   * @param {Object} data Node announcement data
    */
   async handleNodeAnnouncement(data) {
-    if (data.nodeId === this.localNodeId) return;
+    console.log(`[Node Announcement] Received from ${data.nodeId.slice(0, 8)}`);
 
-    console.log(`[Node ${this.localNodeId.slice(0, 8)}] Processing node announcement:`, {
-      nodeId: data.nodeId.slice(0, 8),
-      role: data.role,
-      location: data.location
-    });
+    if (data.nodeId === this.localNodeId) {
+      console.log('[Node Announcement] Ignoring announcement from self');
+      return;
+    }
 
-    this.nodes.set(data.nodeId, {
-      role: data.role,
-      status: data.status,
-      location: data.location,
-      publicKey: await crypto.subtle.importKey(
-        'spki',
-        this.crypto.base64ToArrayBuffer(data.publicKey),
-        {
-          name: 'RSA-OAEP',
-          hash: 'SHA-256'
-        },
-        true,
-        ['encrypt']
-      ),
-      lastSeen: Date.now()
-    });
+    try {
+      // Add or update node in registry
+      const node = {
+        nodeId: data.nodeId,
+        role: data.role,
+        status: data.status || 'WAITING',
+        lastSeen: Date.now()
+      };
 
-    // Emit nodeRegistered event after successfully adding the node
-    this.eventEmitter.emit('nodeRegistered', data.nodeId);
+      // Store node in registry
+      this.nodes.set(data.nodeId, node);
+      console.log(`[Node Announcement] Added/updated node ${data.nodeId.slice(0, 8)}`);
 
-    // Update network metrics after node addition
-    this.updateNetworkMetrics();
+      // Emit node registered event
+      this.eventEmitter.emit('nodeRegistered', data.nodeId);
+
+      // Update network metrics
+      this.updateNetworkMetrics();
+
+      // Send validation response
+      await this.validateNode(data.nodeId);
+    } catch (error) {
+      console.error('[Node Announcement] Error handling announcement:', error);
+    }
   }
 
   /**
@@ -377,7 +317,9 @@ export class NodeRegistry {
     const node = this.nodes.get(data.nodeId);
     if (node) {
       node.status = data.status;
+      node.role = data.role || node.role;  // Preserve or update role
       node.lastSeen = Date.now();
+      console.log(`[Node Status] Updated node ${data.nodeId} status to ${data.status}, role: ${node.role}`);
       this.updateNetworkMetrics();
     }
   }
@@ -405,83 +347,50 @@ export class NodeRegistry {
   }
 
   /**
-   * Discover available relay nodes with enhanced anonymity properties
-   * @param {NodeRole} role - Optional role to filter nodes by
-   * @returns {Promise<Array<{nodeId: string, role: NodeRole, status: NodeStatus}>>}
+   * Discover and validate other nodes in the network
+   * @returns {Promise<Array>} List of connected nodes
    */
-  async discoverNodes(role = null) {
-    // Wait for WebSocket connection to be ready
-    if (!this.signaling || this.signaling.readyState !== WebSocket.OPEN) {
-      console.log('[Node Registry] Waiting for WebSocket connection to be ready...');
-      try {
-        await new Promise((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            reject(new Error('WebSocket connection timeout'));
-          }, 5000);
+  async discoverNodes() {
+    console.log('[Node Registry] Starting node discovery');
 
-          const checkConnection = () => {
-            if (this.signaling.readyState === WebSocket.OPEN) {
-              clearTimeout(timeout);
-              resolve();
-            } else if (this.signaling.readyState === WebSocket.CLOSED || this.signaling.readyState === WebSocket.CLOSING) {
-              clearTimeout(timeout);
-              reject(new Error('WebSocket connection failed'));
-            } else {
-              setTimeout(checkConnection, 100);
-            }
-          };
-          checkConnection();
-        });
-      } catch (error) {
-        console.error('[Node Registry] Failed to establish WebSocket connection:', error);
-        return [];
-      }
+    // Get local node info
+    const localNode = {
+      nodeId: this.localNodeId,
+      role: this.role,
+      status: this.status,
+      lastSeen: Date.now()
+    };
+
+    // Update local node in registry
+    this.nodes.set(this.localNodeId, localNode);
+
+    // Prepare discovery announcement
+    const announcement = {
+      type: 'DISCOVERY_REQUEST',
+      nodeId: this.localNodeId,
+      role: this.role,
+      status: this.status,
+      timestamp: Date.now()
+    };
+
+    // Send discovery request
+    if (this.signaling && this.signaling.readyState === WebSocket.OPEN) {
+      console.log('[Node Registry] Sending discovery request');
+      this.signaling.send(JSON.stringify(announcement));
     }
 
-    const discovery = {
-      type: 'node_discovery',
-      requestId: crypto.randomUUID(),
-      capabilities: {
-        bandwidth: this.getAvailableBandwidth(),
-        latency: await this.measureLatency(),
-        uptime: Date.now() - this.startTime,
-        reliability: this.getReliabilityScore()
+    // Filter and update active nodes
+    const activeNodes = Array.from(this.nodes.values()).filter(node => {
+      const isRecent = (Date.now() - node.lastSeen) < 30000; // 30 second timeout
+      if (!isRecent) {
+        console.log(`[Node Registry] Removing stale node ${node.nodeId}`);
+        this.nodes.delete(node.nodeId);
       }
-    };
-    this.signaling.send(JSON.stringify(discovery));
+      return isRecent;
+    });
 
-    // Wait for responses and filter nodes
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    const now = Date.now();
-
-    // Get active nodes and filter based on enhanced criteria
-    const activeNodes = Array.from(this.nodes.entries())
-      .filter(([nodeId, node]) => {
-        // During waiting period, include all recently seen nodes
-        if (this.status === NodeStatus.WAITING) {
-          return (now - node.lastSeen <= 30000); // Include all recent nodes, including local
-        }
-
-        // Basic availability checks
-        if (now - node.lastSeen > 30000) return false;
-        if (role && node.role !== role) return false;
-
-        // Enhanced anonymity checks only after waiting period
-        if (!this.meetsReliabilityThreshold(node)) return false;
-        if (!this.hasAcceptableLatency(node)) return false;
-
-        return true;
-      })
-      .map(([nodeId, node]) => ({
-        nodeId,
-        role: node.role,
-        status: node.status,
-        capabilities: node.capabilities
-      }));
-
-    console.log(`[Node Discovery] Found ${activeNodes.length} active nodes:`,
-      activeNodes.map(n => ({ id: n.nodeId.slice(0, 8), role: n.role, status: n.status }))
-    );
+    console.log(`[Node Registry] Active nodes: ${activeNodes.length}`);
+    this.updateNetworkMetrics();
 
     return activeNodes;
   }
@@ -492,32 +401,53 @@ export class NodeRegistry {
    * @returns {Promise<boolean>} Whether the node is valid and reliable
    */
   async validateNode(nodeId) {
-    const node = this.nodes.get(nodeId);
-    if (!node) return false;
-
-    const validation = {
-      type: 'node_validation',
-      nodeId: this.localNodeId,
-      targetNodeId: nodeId,
-      timestamp: Date.now()
-    };
-    this.signaling.send(JSON.stringify(validation));
-
-    // Wait for validation response
-    return new Promise((resolve) => {
-      const timeout = setTimeout(() => resolve(false), 5000);
-      const handler = (message) => {
-        const data = JSON.parse(message.data);
-        if (data.type === 'node_validation_response' &&
-            data.nodeId === nodeId &&
-            data.targetNodeId === this.localNodeId) {
-          clearTimeout(timeout);
-          this.signaling.removeEventListener('message', handler);
-          resolve(this.evaluateNodeCapabilities(data.capabilities));
-        }
+    try {
+      console.log(`[Node Validation] Validating node ${nodeId}`);
+      const validation = {
+        type: 'NODE_VALIDATION',
+        nodeId: this.localNodeId,
+        targetId: nodeId,
+        timestamp: Date.now()
       };
-      this.signaling.addEventListener('message', handler);
-    });
+
+      if (this.signaling?.readyState === WebSocket.OPEN) {
+        this.signaling.send(JSON.stringify(validation));
+
+        // Wait for validation response with increased timeout
+        const isValid = await new Promise((resolve) => {
+          const handler = (event) => {
+            const response = JSON.parse(event.data);
+            if (response.type === 'NODE_VALIDATION_RESPONSE' && response.nodeId === nodeId) {
+              this.signaling.removeEventListener('message', handler);
+              // Update node status to AVAILABLE if validation passes
+              const node = this.nodes.get(nodeId);
+              if (node) {
+                node.status = NodeStatus.AVAILABLE;
+                this.updateNetworkMetrics();
+              }
+              resolve(true);
+            }
+          };
+          this.signaling.addEventListener('message', handler);
+          // Increased timeout to 10 seconds but keep node in WAITING state
+          setTimeout(() => {
+            this.signaling.removeEventListener('message', handler);
+            const node = this.nodes.get(nodeId);
+            if (node && node.status === NodeStatus.WAITING) {
+              resolve(true); // Consider WAITING nodes as valid for connection
+            } else {
+              resolve(false);
+            }
+          }, 10000);
+        });
+
+        return isValid;
+      }
+      return false;
+    } catch (error) {
+      console.error(`[Node Validation] Error validating node ${nodeId}:`, error);
+      return false;
+    }
   }
 
   /**
@@ -608,17 +538,6 @@ export class NodeRegistry {
   }
 
   /**
-   * Check if node meets reliability threshold
-   * @private
-   * @param {Object} node - Node to check
-   * @returns {boolean} Whether node is reliable
-   */
-  meetsReliabilityThreshold(node) {
-    const MIN_RELIABILITY = 0.8;
-    return node.capabilities?.reliability >= MIN_RELIABILITY;
-  }
-
-  /**
    * Check if node has acceptable latency
    * @private
    * @param {Object} node - Node to check
@@ -672,6 +591,7 @@ export class NodeRegistry {
    */
   async measureBandwidth() {
     const now = Date.now();
+    const TEST_SIZE = 1024 * 256; // 256KB
 
     // Only measure bandwidth every 30 seconds
     if (this.lastBandwidthMeasurement &&
@@ -725,7 +645,6 @@ export class NodeRegistry {
       });
 
       // Send test data
-      const TEST_SIZE = 1024 * 256; // 256KB
       const testData = new Uint8Array(TEST_SIZE);
       const startTime = performance.now();
       dc1.send(testData);
@@ -740,41 +659,51 @@ export class NodeRegistry {
   }
 
   /**
-   * Update local node status and handle role rotation
-   * @param {NodeStatus} status - New status
+   * Update node status
+   * @private
+   * @param {string} status - New status
    */
-  updateStatus(status) {
+  async updateStatus(status) {
+    const prevStatus = this.status;
     this.status = status;
 
-    // Update local node in Map
-    const localNode = this.nodes.get(this.localNodeId);
-    if (localNode) {
-      localNode.status = status;
-      localNode.lastSeen = Date.now();
-    }
-
-    // Rotate roles every 30 minutes
-    const ROLE_ROTATION_INTERVAL = 30 * 60 * 1000;
-    if (Date.now() - this.lastRoleRotation > ROLE_ROTATION_INTERVAL) {
-      this.role = this.selectNewRole();
-      this.lastRoleRotation = Date.now();
-    }
-
-    const statusUpdate = {
-      type: 'node_status',
-      nodeId: this.localNodeId,
-      status: this.status,
-      role: this.role
+    // Create local node info for status update
+    const localNode = {
+      id: this.nodeId,
+      role: this.role,
+      status: status,
+      capabilities: await this.evaluateNodeCapabilities()
     };
-    this.signaling.send(JSON.stringify(statusUpdate));
+
+    // Broadcast status update to other nodes
+    const statusUpdate = {
+      type: 'STATUS_UPDATE',
+      node: localNode
+    };
+
+    if (this.signaling && this.signaling.readyState === WebSocket.OPEN) {
+      this.signaling.send(JSON.stringify(statusUpdate));
+    }
+
+    // Update metrics immediately when status changes
+    if (prevStatus !== status) {
+      console.log('[Status Update] Local node status changed:', prevStatus, '->', status);
+      this.updateNetworkMetrics();
+    }
+
+    // Emit local status update event
+    this.eventEmitter.emit('statusUpdate', status);
+
+    return status;
   }
 
   /**
    * Get suitable relay nodes for circuit building
-   * @private
+   * @param {number} numHops - Number of hops needed
    * @returns {Promise<Array>} Array of suitable relay nodes
    */
-  async getSuitableRelays() {
+  async getSuitableRelays(numHops = 3) {
+    // Get all available nodes with acceptable performance
     const validated = Array.from(this.nodes.values())
       .filter(node =>
         node.status === NodeStatus.AVAILABLE &&
@@ -782,18 +711,40 @@ export class NodeRegistry {
         this.meetsReliabilityThreshold(node)
       );
 
-    if (validated.length === 0) {
-      console.warn('[Node Registry] No suitable relay nodes found');
+    if (validated.length < numHops) {
+      console.warn(`[Node Registry] Insufficient relay nodes (${validated.length}/${numHops} needed)`);
       return [];
     }
 
-    // Sort by performance score
-    const suitable = validated.sort((a, b) =>
-      this.calculateNodeScore(b.capabilities) -
-      this.calculateNodeScore(a.capabilities)
-    );
+    // Group nodes by role
+    const nodesByRole = validated.reduce((acc, node) => {
+      acc[node.role] = acc[node.role] || [];
+      acc[node.role].push(node);
+      return acc;
+    }, {});
 
-    return suitable;
+    // Sort each role group by performance score
+    Object.values(nodesByRole).forEach(nodes => {
+      nodes.sort((a, b) => this.calculateNodeScore(b.capabilities) - this.calculateNodeScore(a.capabilities));
+    });
+
+    // Select nodes ensuring role diversity
+    const selected = [];
+    const roles = [NodeRole.ENTRY, NodeRole.RELAY, NodeRole.EXIT];
+
+    for (let i = 0; i < numHops; i++) {
+      const role = roles[Math.min(i, roles.length - 1)];
+      const availableNodes = nodesByRole[role] || [];
+
+      if (availableNodes.length === 0) {
+        console.warn(`[Node Registry] No available nodes for role ${role}`);
+        return [];
+      }
+
+      selected.push(availableNodes.shift());
+    }
+
+    return selected;
   }
 
   calculateNodeScore(capabilities) {
@@ -813,9 +764,18 @@ export class NodeRegistry {
       total + (scores[metric] * weight), 0);
   }
 
-
-
-
+  /**
+   * Get the local node's information
+   * @returns {Object} Local node information
+   */
+  getLocalNode() {
+    return {
+      nodeId: this.localNodeId,
+      role: this.role,
+      status: this.status,
+      lastSeen: Date.now()
+    };
+  }
 
   /**
    * Select initial role for this node
@@ -824,8 +784,8 @@ export class NodeRegistry {
    */
   selectInitialRole() {
     // Return the role that was set during initialization
-    console.log('[Node Registry] Using initialized role:', this.localNodeRole);
-    return this.localNodeRole;
+    console.log('[Node Registry] Using initialized role:', this.role);
+    return this.role;
   }
 
   /**

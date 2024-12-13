@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { NodeRole, NodeStatus } from '../lib/onion/nodeRegistry';
+import { NodeRole, NodeStatus } from '../lib/onion/types';
 import { CircuitStatus } from '../lib/onion/circuitBuilder';
 import { CircuitMonitor } from '../lib/onion/circuitMonitor';
 import NetworkTopology from './NetworkTopology';
@@ -9,7 +9,7 @@ import './NodeControls.css';
 
 const NodeControls = ({ nodeRegistry, circuitBuilder, currentCircuit, onCircuitChange }) => {
   const [availableNodes, setAvailableNodes] = useState([]);
-  const [circuitLength, setCircuitLength] = useState(3);
+  const [circuitLength, setCircuitLength] = useState(2);  // Default to 2 hops
   const [localNodeRole, setLocalNodeRole] = useState(() => {
     const params = new URLSearchParams(window.location.search);
     return params.get('role') || NodeRole.RELAY;
@@ -22,14 +22,15 @@ const NodeControls = ({ nodeRegistry, circuitBuilder, currentCircuit, onCircuitC
   useEffect(() => {
     const fetchNodes = async () => {
       const nodes = await nodeRegistry.discoverNodes();
-      setAvailableNodes(nodes);
+      const localNode = nodeRegistry.getLocalNode();
+      setAvailableNodes([...nodes, localNode].filter(Boolean));
 
       // Auto-connect for ENTRY nodes and show waiting state
-      if (localNodeRole === NodeRole.ENTRY && nodes.length < 3) {
+      if (localNodeRole === NodeRole.ENTRY && nodes.length < 1) {
         setIsWaiting(true);
-      } else if (localNodeRole === NodeRole.ENTRY && nodes.length >= 3 && isWaiting) {
+      } else if (localNodeRole === NodeRole.ENTRY && nodes.length >= 1 && isWaiting) {
         setIsWaiting(false);
-        handleCircuitLengthChange(3); // Automatically build circuit when enough nodes are available
+        handleCircuitLengthChange(2); // Automatically build circuit when enough nodes are available
       }
     };
 
@@ -73,8 +74,8 @@ const NodeControls = ({ nodeRegistry, circuitBuilder, currentCircuit, onCircuitC
   };
 
   const handleCircuitLengthChange = async (length) => {
-    if (length < 3) {
-      alert('Minimum circuit length is 3 hops for anonymity');
+    if (length < 2) {
+      alert('Minimum circuit length is 2 hops for anonymity');
       return;
     }
     setCircuitLength(length);
@@ -91,7 +92,7 @@ const NodeControls = ({ nodeRegistry, circuitBuilder, currentCircuit, onCircuitC
 
       {isWaiting && (
         <div className="waiting-state">
-          <p>Waiting for more nodes to join the network... ({availableNodes.length}/3 nodes available)</p>
+          <p>Waiting for more nodes to join the network... ({availableNodes.length}/2 nodes available)</p>
         </div>
       )}
 
@@ -144,11 +145,11 @@ const NodeControls = ({ nodeRegistry, circuitBuilder, currentCircuit, onCircuitC
           <label>Circuit Length (hops):</label>
           <input
             type="number"
-            min="3"
+            min="2"
             value={circuitLength}
             onChange={(e) => handleCircuitLengthChange(Number(e.target.value))}
           />
-          <small>Minimum 3 hops required for anonymity</small>
+          <small>Minimum 2 hops required for anonymity</small>
         </div>
       </div>
 

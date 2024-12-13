@@ -4,9 +4,9 @@ import ReactFlow, {
   Controls,
   MiniMap
 } from 'react-flow-renderer';
-import { geoMercator } from 'd3-geo';
 import { Network } from '@visx/network';
 import { forceSimulation, forceLink, forceManyBody, forceCenter } from 'd3-force';
+import { NodeStatus } from '../lib/onion/types';
 
 const NetworkTopology = ({
   nodes = [],
@@ -38,11 +38,13 @@ const NetworkTopology = ({
   }, [nodes, currentCircuit, circuitHealth]);
 
   const calculateNodePosition = (node, index, total) => {
-    const radius = Math.min(layout.width, layout.height) * 0.4;
+    // Use force-directed layout for more natural network topology
     const angle = (index / total) * 2 * Math.PI;
+    const radius = Math.min(layout.width, layout.height) * 0.35;
+    const jitter = Math.random() * 20 - 10; // Add slight randomness for more organic look
     return {
-      x: layout.width / 2 + radius * Math.cos(angle),
-      y: layout.height / 2 + radius * Math.sin(angle)
+      x: layout.width / 2 + (radius + jitter) * Math.cos(angle),
+      y: layout.height / 2 + (radius + jitter) * Math.sin(angle)
     };
   };
 
@@ -50,38 +52,54 @@ const NetworkTopology = ({
     const baseStyle = {
       padding: 10,
       borderRadius: '50%',
-      border: '1px solid #777',
-      width: 60,
-      height: 60,
+      border: '2px solid #777',
+      width: 70,
+      height: 70,
       display: 'flex',
+      flexDirection: 'column',
       justifyContent: 'center',
       alignItems: 'center',
+      fontSize: '0.8em',
+      transition: 'all 0.3s ease'
     };
 
-    // Handle waiting state for ENTRY nodes
-    if (isWaiting && node.role === 'ENTRY') {
+    // Role-specific colors
+    const roleColors = {
+      ENTRY: '#4CAF50',
+      RELAY: '#2196F3',
+      EXIT: '#FF9800'
+    };
+
+    // Handle waiting state
+    if (isWaiting && (node.status === 'WAITING' || node.status === NodeStatus.WAITING)) {
       return {
         ...baseStyle,
         backgroundColor: '#fff3e0',
-        borderColor: '#ff9800',
+        borderColor: roleColors[node.role] || '#777',
         borderWidth: 2,
         animation: 'pulse 1.5s infinite',
-        className: 'node-waiting'
+        className: 'node-waiting',
+        opacity: 1 // Ensure waiting nodes are fully visible
       };
     }
 
+    // Handle circuit nodes
     if (circuit && circuit.nodes.includes(node.nodeId)) {
       return {
         ...baseStyle,
-        backgroundColor: '#e6ffe6',
-        borderColor: '#006600',
-        borderWidth: 2,
+        backgroundColor: '#e8f5e9',
+        borderColor: roleColors[node.role] || '#006600',
+        borderWidth: 3,
+        boxShadow: '0 0 10px rgba(0,102,0,0.3)'
       };
     }
 
+    // Default node style based on status and role
     return {
       ...baseStyle,
       backgroundColor: node.status === 'AVAILABLE' ? '#fff' : '#f5f5f5',
+      borderColor: roleColors[node.role] || '#777',
+      opacity: node.status === 'AVAILABLE' ? 1 : 0.7
     };
   };
 

@@ -1,6 +1,6 @@
 import { CircuitMonitor } from './circuitMonitor';
 import { CircuitStatus } from './circuitBuilder';
-import { NodeStatus } from './nodeRegistry';
+import { NodeStatus } from './types';
 
 describe('CircuitMonitor', () => {
   let monitor;
