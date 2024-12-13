@@ -1,0 +1,87 @@
+.react-flow {
+  background-color: #f8f8f8;
+}
+
+.react-flow__node {
+  font-size: 12px;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  text-align: center;
+}
+
+.react-flow__node.circuit-node {
+  background: #e6ffe6;
+  border-color: #006600;
+}
+
+.react-flow__edge {
+  stroke: #999;
+}
+
+.react-flow__edge.circuit-edge {
+  stroke: #006600;
+  stroke-width: 2;
+}
+
+.react-flow__controls {
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.15);
+}
+
+.react-flow__minimap {
+  background-color: #fff;
+}
+
+.node-tooltip {
+  background: white;
+  padding: 5px 10px;
+  border-radius: 4px;
+  box-shadow: 0 0 5px rgba(0, 0, 0, 0.2);
+  font-size: 12px;
+}
+
+.node-status {
+  margin-top: 4px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-size: 10px;
+}
+
+.status-available {
+  background: #e6ffe6;
+  color: #006600;
+}
+
+.status-busy {
+  background: #fff3e6;
+  color: #cc6600;
+}
+
+.status-offline {
+  background: #ffe6e6;
+  color: #cc0000;
+}
+
+.status-waiting {
+  background: #fff3e0;
+  color: #ff9800;
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.1);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.node-waiting {
+  animation: pulse 1.5s infinite;
+}

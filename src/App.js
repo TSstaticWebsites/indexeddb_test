@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import FileTransferComponent from './FileTransferComponent';
+import MonitoringDashboard from './components/MonitoringDashboard';
 import {
   addFile,
   getFile,
@@ -14,6 +15,7 @@ function App() {
   const [storedFiles, setStoredFiles] = useState([]);
   const [displayedFile, setDisplayedFile] = useState(null);
   const [totalStorageUsed, setTotalStorageUsed] = useState(0);
+  const [networkState, setNetworkState] = useState(null);
 
   useEffect(() => {
     fetchStoredFiles();
@@ -108,7 +110,7 @@ function App() {
                   <path
                       strokeLinecap="round"
                       strokeLinejoin="round"
-                      d="M3 10.5l8.25 8.25l8.25-8.25M11.25 18.75V4.5" 
+                      d="M3 10.5l8.25 8.25l8.25-8.25M11.25 18.75V4.5"
                   />
               </svg>
               <p>No files available in storage. Upload one to get started!</p>
@@ -154,7 +156,29 @@ function App() {
           </div>
         )}
         <div>
-          <FileTransferComponent fetchStoredFiles={fetchStoredFiles}/>
+          <FileTransferComponent fetchStoredFiles={fetchStoredFiles} ref={(comp) => {
+            if (comp) {
+              setNetworkState({
+                circuit: comp.circuit,
+                circuitBuilder: comp.circuitBuilder,
+                nodeRegistry: comp.nodeRegistry,
+                currentChunk: comp.currentChunk,
+                totalChunks: comp.totalChunks,
+                transferDirection: comp.transferDirection
+              });
+            }
+          }}/>
+          <MonitoringDashboard
+            circuit={networkState?.circuit}
+            circuitBuilder={networkState?.circuitBuilder}
+            nodeRegistry={networkState?.nodeRegistry}
+            currentChunk={networkState?.currentChunk}
+            totalChunks={networkState?.totalChunks}
+            transferDirection={networkState?.transferDirection}
+            onNodeSelect={(nodeId) => {
+              console.log('Node selected:', nodeId);
+            }}
+          />
         </div>
       </div>
       <footer>
