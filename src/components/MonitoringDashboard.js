@@ -40,7 +40,9 @@ const MonitoringDashboard = ({
     }
 
     const nodes = Array.from(nodeRegistry.current.nodes.values());
-    const activeNodes = nodes.filter(node => node.status === NodeStatus.AVAILABLE).length;
+    const activeNodes = nodes.filter(node =>
+      node.status === NodeStatus.AVAILABLE || node.status === NodeStatus.WAITING
+    ).length;
     const waitingNodes = nodes.filter(node => node.status === NodeStatus.WAITING).length;
     const status = waitingNodes > 0 ? 'WAITING' :
                   activeNodes >= CONNECTION_CONSTANTS.MIN_NODES_REQUIRED ? 'READY' :
@@ -64,7 +66,9 @@ const MonitoringDashboard = ({
     const handleNodeUpdate = () => {
       console.log('Node update received in MonitoringDashboard');
       const nodes = Array.from(nodeRegistry.current.nodes.values());
-      const activeNodes = nodes.filter(node => node.status === NodeStatus.AVAILABLE).length;
+      const activeNodes = nodes.filter(node =>
+        node.status === NodeStatus.AVAILABLE || node.status === NodeStatus.WAITING
+      ).length;
       const waitingNodes = nodes.filter(node => node.status === NodeStatus.WAITING).length;
       const status = waitingNodes > 0 ? 'WAITING' :
                     activeNodes >= CONNECTION_CONSTANTS.MIN_NODES_REQUIRED ? 'READY' :
@@ -111,12 +115,12 @@ const MonitoringDashboard = ({
             <span className="stat-label">Status</span>
             <span className={`stat-value status-${networkMetrics.status?.toLowerCase()}`}>
               {networkMetrics.status === 'WAITING'
-                ? `Waiting for nodes (${networkMetrics.totalNodes}/${CONNECTION_CONSTANTS.MIN_NODES_REQUIRED})`
+                ? `Connected nodes waiting (${networkMetrics.activeNodes}/${CONNECTION_CONSTANTS.MIN_NODES_REQUIRED} ready)`
                 : networkMetrics.status === 'CONNECTING'
                   ? 'Establishing connections...'
                   : networkMetrics.circuitStatus === 'BUILDING'
                     ? 'Building Circuit...'
-                    : networkMetrics.circuitStatus || 'Ready'}
+                    : networkMetrics.circuitStatus || 'Ready for Circuit Building'}
             </span>
           </div>
         </div>

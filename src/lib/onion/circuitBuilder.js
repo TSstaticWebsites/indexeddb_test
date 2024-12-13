@@ -18,7 +18,7 @@ export class CircuitBuilder {
     this.nodeRegistry = nodeRegistry;
     this.encryption = layeredEncryption;
     this.circuits = new Map();
-    this.MIN_HOPS = 3;
+    this.MIN_HOPS = 2;  // Changed from 3 to 2 to support 2-node circuits
   }
 
   /**
